@@ -56,7 +56,7 @@ export function CalendarView({ home, me, week, setWeek, weekNav, ticking, onOpen
 
   return (
     <div className="stack">
-      <div className="row spread">
+      <div className="stack tight">
         <div className="segmented small" role="tablist" aria-label="Calendar range">
           <button role="tab" aria-selected={mode === "week"} onClick={() => setMode("week")}>
             Week
