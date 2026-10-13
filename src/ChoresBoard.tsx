@@ -40,6 +40,7 @@ import { CalendarView } from "./CalendarView";
 import {
   AssigneeAvatars,
   AssigneePicker,
+  BackButton,
   ChoreForm,
   NEW_SCHEDULE,
   ScheduleEditor,
@@ -742,14 +743,17 @@ function AddItemSheet({
   return (
     <Sheet title={who ? `Add a chore for ${who.name}` : "Add a chore this week"} onClose={onClose}>
       {step === "new" && (
-        <ChoreForm
-          submitLabel="Next →"
-          onSubmit={async (c) => {
-            const created = await api<Chore>("POST", "/api/chores", c);
-            onAdded();
-            choose(created);
-          }}
-        />
+        <>
+          {chores.length > 0 && <BackButton onClick={() => setStep("pick")} />}
+          <ChoreForm
+            submitLabel="Next →"
+            onSubmit={async (c) => {
+              const created = await api<Chore>("POST", "/api/chores", c);
+              onAdded();
+              choose(created);
+            }}
+          />
+        </>
       )}
       {step === "pick" && (
         <div className="stack">
@@ -769,6 +773,7 @@ function AddItemSheet({
       )}
       {step === "details" && chore && (
         <div className="stack">
+          <BackButton onClick={() => setStep("pick")} />
           <p className="picked">
             {chore.emoji} <strong>{chore.title}</strong>
           </p>
@@ -835,6 +840,7 @@ function ItemSheet({
     <Sheet title={`${chore.emoji} ${chore.title}`} onClose={onClose}>
       {editingChore ? (
         <>
+          <BackButton onClick={() => setEditingChore(false)} />
           <p className="muted">Changes apply everywhere this chore appears.</p>
           <ChoreForm initial={chore} submitLabel="Save chore" onSubmit={(c) => run(() => api("PATCH", `/api/chores/${chore.id}`, c))} />
         </>

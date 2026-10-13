@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { type Chore, type HomeData, type Rule, type Schedule, type Template, type TemplatesData, describeEstimate, describeSchedule } from "../shared/core";
 import { api } from "./api";
-import { AssigneeAvatars, AssigneePicker, ChoreForm, NEW_SCHEDULE, ScheduleEditor } from "./choreParts";
+import { AssigneeAvatars, AssigneePicker, BackButton, ChoreForm, NEW_SCHEDULE, ScheduleEditor } from "./choreParts";
 import { Sheet, attempt, toast } from "./ui";
 
 interface Props {
@@ -262,14 +262,19 @@ function RuleSheet({
   return (
     <Sheet title={rule ? `${chore?.emoji ?? ""} ${chore?.title ?? "Chore"}` : `Add to “${template.name}”`} onClose={onClose}>
       {step === "new" && (
-        <ChoreForm
-          submitLabel="Next →"
-          onSubmit={async (c) => {
-            const created = await api<Chore>("POST", "/api/chores", c);
-            setChore(created);
-            setStep("details");
-          }}
-        />
+        <>
+          {available.length > 0 && <BackButton onClick={() => setStep("pick")} />}
+          <ChoreForm
+            submitLabel="Next →"
+            onSubmit={async (c) => {
+              const created = await api<Chore>("POST", "/api/chores", c);
+              // Refresh the chore list so it's there to pick if they step back.
+              onSaved();
+              setChore(created);
+              setStep("details");
+            }}
+          />
+        </>
       )}
       {step === "pick" && (
         <div className="stack">
@@ -296,6 +301,7 @@ function RuleSheet({
       )}
       {step === "details" && chore && editingChore && (
         <>
+          <BackButton onClick={() => setEditingChore(false)} />
           <p className="muted">Changes apply everywhere this chore appears.</p>
           <ChoreForm
             initial={chore}
@@ -311,6 +317,8 @@ function RuleSheet({
       )}
       {step === "details" && chore && !editingChore && (
         <div className="stack">
+          {/* Editing an existing rule has nowhere to go back to. */}
+          {!rule && <BackButton onClick={() => setStep("pick")} />}
           <p className="picked">
             {chore.emoji} <strong>{chore.title}</strong> · {describeEstimate(chore.minutes, chore.per)}{" "}
             <button className="link" onClick={() => setEditingChore(true)}>

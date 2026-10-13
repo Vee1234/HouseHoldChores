@@ -350,3 +350,12 @@ export function AssigneeAvatars({ ids, members, size = 22 }: { ids: string[]; me
 
 export const NEW_SCHEDULE: Schedule = { kind: "anytime", timesPerWeek: 1, days: 0, everyWeeks: 1, time: null, afterChoreId: null };
 
+
+/** Steps back one screen inside a sheet. */
+export function BackButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button type="button" className="back-btn" onClick={onClick}>
+      ‹ Back
+    </button>
+  );
+}
