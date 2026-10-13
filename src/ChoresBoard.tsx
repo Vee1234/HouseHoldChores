@@ -250,6 +250,8 @@ export function ChoresBoard({ home, me, reloadHome }: Props) {
       {sheet?.kind === "item" && board && (
         <ItemSheet
           item={board.items.find((i) => i.id === sheet.itemId)}
+          completions={board.completions.filter((c) => c.itemId === sheet.itemId)}
+          onUndo={(item, c) => toggle(item, { day: c.day, label: "", completion: c })}
           chores={chores}
           members={home.members}
           onClose={() => setSheet(null)}
@@ -618,12 +620,17 @@ function AddItemSheet({
 
 function ItemSheet({
   item,
+  completions,
+  onUndo,
   chores,
   members,
   onClose,
   onChanged,
 }: {
   item: BoardItem | undefined;
+  completions: Completion[];
+  /** Sets a done go back to not done. */
+  onUndo: (item: BoardItem, completion: Completion) => void;
   chores: Map<string, Chore>;
   members: Member[];
   onClose: () => void;
@@ -650,6 +657,9 @@ function ItemSheet({
         </>
       ) : (
         <div className="stack">
+          {completions.length > 0 && (
+            <DoneSoFar item={item} completions={completions} members={members} onUndo={(c) => onUndo(item, c)} />
+          )}
           <p className="muted small">
             Changes here are for this week only. Editing this chore in the template in use will update it here again.
           </p>
@@ -701,6 +711,57 @@ function ItemSheet({
         </div>
       )}
     </Sheet>
+  );
+}
+
+/** The goes of a chore done this week, each of which can be set back to not done. */
+function DoneSoFar({
+  item,
+  completions,
+  members,
+  onUndo,
+}: {
+  item: BoardItem;
+  completions: Completion[];
+  members: Member[];
+  onUndo: (c: Completion) => void;
+}) {
+  const sorted = [...completions].sort((a, b) => a.doneAt - b.doneAt);
+  const allDone = completions.length >= goesPerWeek(item);
+  const latest = sorted[sorted.length - 1];
+  const dayName = (day: string | null) =>
+    day ? new Date(day + "T00:00:00Z").toLocaleDateString(undefined, { weekday: "short", timeZone: "UTC" }) : "";
+  return (
+    <div className="field done-so-far">
+      <span>{allDone ? "✅ Completed" : "Done so far"}</span>
+      {allDone && (
+        <button className="btn" onClick={() => onUndo(latest)}>
+          ↩️ Mark as not done
+        </button>
+      )}
+      <ul className="done-list">
+        {sorted.map((c) => {
+          const who = members.find((m) => m.id === c.memberId);
+          return (
+            <li key={c.id}>
+              <span>
+                ✓ {item.kind === "days" ? dayName(c.day) : dayName(c.day) || "One go"} · done by{" "}
+                {who ? (
+                  <>
+                    <BuddySprite buddy={who.buddy} size={18} className="inline-sprite" /> {who.name}
+                  </>
+                ) : (
+                  "someone"
+                )}
+              </span>
+              <button className="link" onClick={() => onUndo(c)}>
+                Undo
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 

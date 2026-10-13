@@ -2334,3 +2334,28 @@ code.version {
   flex: none;
   white-space: nowrap;
 }
+
+.done-so-far {
+  background: color-mix(in srgb, var(--sage) 16%, var(--paper));
+  border: 2px solid color-mix(in srgb, var(--sage) 45%, var(--line));
+  border-radius: 16px;
+  padding: 10px 12px;
+}
+.done-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.done-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 0.92rem;
+}
+.done-list .inline-sprite {
+  vertical-align: -4px;
+}
