@@ -2202,3 +2202,18 @@ code.version {
   border-radius: 6px;
   padding: 1px 6px;
 }
+
+.back-btn {
+  align-self: flex-start;
+  border: 0;
+  background: none;
+  padding: 4px 2px;
+  margin-bottom: 4px;
+  font-weight: 800;
+  color: var(--accent-deep);
+}
+@media (prefers-color-scheme: dark) {
+  .back-btn {
+    color: var(--accent);
+  }
+}
