@@ -78,6 +78,8 @@ export function TodayChores({ ticking, onOpenItem }: { ticking: Ticking; onOpenI
   const todays = onDay(today);
   const laterDays: string[] = [];
   for (let day = addDays(today, 1); day <= addDays(board.week, 6); day = addDays(day, 1)) laterDays.push(day);
+  // Days with nothing on are left out of This Week.
+  const laterWithChores = laterDays.map((day) => ({ day, entries: onDay(day) })).filter((d) => d.entries.length > 0);
 
   return (
     <div className="today-chores">
@@ -107,20 +109,15 @@ export function TodayChores({ ticking, onOpenItem }: { ticking: Ticking; onOpenI
         <h2>This Week</h2>
         {laterDays.length === 0 ? (
           <p className="empty-day">That's the end of the week — a fresh one starts tomorrow 🌱</p>
+        ) : laterWithChores.length === 0 ? (
+          <p className="empty-day">Nothing else planned this week 🌼</p>
         ) : (
-          laterDays.map((day) => {
-            const entries = onDay(day);
-            return (
-              <div key={day} className="later-day">
-                <h3>{longDate(day)}</h3>
-                {entries.length === 0 ? (
-                  <p className="empty-day">No chores for this day</p>
-                ) : (
-                  <div className="day-cards">{entries.map((e) => card(e, `${e.item.id}-${day}`))}</div>
-                )}
-              </div>
-            );
-          })
+          laterWithChores.map(({ day, entries }) => (
+            <div key={day} className="later-day">
+              <h3>{longDate(day)}</h3>
+              <div className="day-cards">{entries.map((e) => card(e, `${e.item.id}-${day}`))}</div>
+            </div>
+          ))
         )}
       </section>
     </div>
