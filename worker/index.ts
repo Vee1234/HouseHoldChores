@@ -1074,11 +1074,24 @@ route("GET", "/api/announcements", async ({ env, hh, url }) => {
   return json(results.map(mapAnnouncement));
 });
 
+/** " for tomorrow" / " for Fri 16 Oct", or nothing for today. */
+function noteDayLabel(day: string, todayKey: string): string {
+  if (day === todayKey) return "";
+  if (day === addDays(todayKey, 1)) return " for tomorrow";
+  const label = new Date(day + "T00:00:00Z").toLocaleDateString("en-GB", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    timeZone: "UTC",
+  });
+  return ` for ${label}`;
+}
+
 route("POST", "/api/announcements", async ({ env, hh, body, waitUntil }) => {
   const day = typeof body.day === "string" && /^\d{4}-\d{2}-\d{2}$/.test(body.day) ? body.day : today(hh);
   const authorId = await ownMember(env, hh, body.authorId);
-  // Notes for today (or earlier) are pushed now; future ones by the scheduler on the day.
-  const pushedNow = day <= today(hh);
+  // Notes for a later day get a second nudge from the scheduler on the morning of that day.
+  const morningNudgeDone = day <= today(hh);
   const a = {
     id: uid(),
     authorId,
@@ -1090,19 +1103,22 @@ route("POST", "/api/announcements", async ({ env, hh, body, waitUntil }) => {
   await env.DB.prepare(
     "INSERT INTO announcements (id, household_id, author_id, day, text, color, notified, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
   )
-    .bind(a.id, hh.id, a.authorId, a.day, a.text, a.color, pushedNow ? 1 : 0, a.createdAt)
+    .bind(a.id, hh.id, a.authorId, a.day, a.text, a.color, morningNudgeDone ? 1 : 0, a.createdAt)
     .run();
-  if (day === today(hh)) {
+  // Everyone else hears about a new note straight away, with the note itself
+  // as the message. Notes for a later day also get a nudge that morning.
+  if (day >= today(hh)) {
     const author = authorId
       ? await env.DB.prepare("SELECT name, emoji FROM members WHERE id = ?").bind(authorId).first<any>()
       : null;
+    const who = author ? `${author.emoji} ${author.name}` : "Someone";
     waitUntil(
       notify(
         env,
         hh.id,
         null,
         {
-          title: author ? `📌 ${author.emoji} ${author.name} posted a note` : "📌 New note on the board",
+          title: `📌 ${who} posted a note${noteDayLabel(day, today(hh))}`,
           body: a.text,
           url: "/?tab=today",
           tag: `note-${a.id}`,
@@ -1403,7 +1419,7 @@ async function runSchedule(env: Env) {
         title: "📌 On the board today",
         body: a.text,
         url: "/?tab=today",
-        tag: `note-${a.id}`,
+        tag: `note-today-${a.id}`,
       });
   }
 }
