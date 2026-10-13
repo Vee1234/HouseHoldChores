@@ -327,7 +327,7 @@ export function AssigneePicker({
       </div>
       <small className="muted">
         {value.length === 0
-          ? "Nobody picked — it'll be up for grabs."
+          ? "Pick at least one person."
           : value.length > 1
             ? "Done together: one tick counts for everyone picked."
             : ""}

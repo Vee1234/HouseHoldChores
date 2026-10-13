@@ -14,7 +14,7 @@ import { BuddySprite, Toasts, usePolled } from "./ui";
 const TABS = [
   { id: "today", label: "Today", icon: "🏡" },
   { id: "chores", label: "Chores", icon: "🧺" },
-  { id: "reminders", label: "Updates", icon: "🔔" },
+  { id: "reminders", label: "Reminders", icon: "⏰" },
   { id: "time", label: "Time", icon: "⏳" },
   { id: "family", label: "Family", icon: "🐻" },
 ] as const;

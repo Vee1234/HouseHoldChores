@@ -10,6 +10,7 @@ import {
 } from "../shared/core";
 import { api } from "./api";
 import { EveryonesProgress } from "./EveryonesProgress";
+import { Updates } from "./Updates";
 import { BuddySprite, NOTE_COLORS, Sheet, attempt, prettyDay, toast, usePolled } from "./ui";
 
 interface Props {
@@ -92,11 +93,35 @@ export function Today({ home, me, goTo }: Props) {
         </button>
       </div>
 
+      <Updates
+        home={home}
+        me={me}
+        between={
+        <div className="card">
+          <div className="card-head">
+            <h2>⏰ Coming up</h2>
+            <button className="link" onClick={() => goTo("reminders")}>
+              All reminders →
+            </button>
+          </div>
+          {reminders.data && upcoming.length === 0 && <p className="muted">No reminders set.</p>}
+          <ul className="mini-list">
+            {upcoming.map((r) => (
+              <li key={r.id}>
+                <span>{r.title}</span>
+                <span className="pill">{formatWhen(r.dueAt)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+        }
+      />
+
       <div className="card">
         <div className="card-head">
           <h2>🧺 Your chores this week</h2>
           <button className="link" onClick={() => goTo("chores")}>
-            See board →
+            See chores →
           </button>
         </div>
         {!me && <p className="muted">Pick who you are under Family to see your chores.</p>}
@@ -118,24 +143,6 @@ export function Today({ home, me, goTo }: Props) {
       </div>
 
       {board.data && <EveryonesProgress board={board.data} home={home} me={me} />}
-
-      <div className="card">
-        <div className="card-head">
-          <h2>⏰ Coming up</h2>
-          <button className="link" onClick={() => goTo("reminders")}>
-            All reminders →
-          </button>
-        </div>
-        {reminders.data && upcoming.length === 0 && <p className="muted">No reminders set.</p>}
-        <ul className="mini-list">
-          {upcoming.map((r) => (
-            <li key={r.id}>
-              <span>{r.title}</span>
-              <span className="pill">{formatWhen(r.dueAt)}</span>
-            </li>
-          ))}
-        </ul>
-      </div>
 
       {posting && (
         <NoteSheet

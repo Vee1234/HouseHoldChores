@@ -348,7 +348,7 @@ function RuleSheet({
             <span>Who does it?</span>
             <AssigneePicker members={home.members} value={assigneeIds} onChange={setAssigneeIds} />
           </div>
-          <button className="btn primary" disabled={busy} onClick={save}>
+          <button className="btn primary" disabled={busy || assigneeIds.length === 0} onClick={save}>
             {rule ? "Save" : "Add to template"}
           </button>
           {rule && (

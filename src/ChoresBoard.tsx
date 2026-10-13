@@ -53,8 +53,7 @@ import { Templates } from "./Templates";
 import { TodayChores } from "./TodayChores";
 import { Avatar, BuddySprite, Sheet, attempt, memberColor, prettyWeek, toast, usePolled } from "./ui";
 
-const UNASSIGNED = "unassigned";
-type View = "today" | "board" | "calendar" | "templates";
+type View = "today" | "calendar" | "templates";
 
 interface Props {
   home: HomeData;
@@ -73,7 +72,14 @@ export interface Ticking {
   waitingFor: (item: BoardItem, slot: Slot) => Chore | undefined;
 }
 
-/** The Chores tab: today's chores, the board, the calendar and the templates. */
+/** Extra actions for the Today view's person boxes. */
+export interface Planning {
+  /** Hands a chore from one person to another (from = null for one nobody's on yet). */
+  handOver: (item: BoardItem, from: string | null, to: string) => void;
+  onAdd: (memberId: string) => void;
+}
+
+/** The Chores tab: today's chores (by person), the calendar and the templates. */
 export function ChoresBoard({ home, me, reloadHome }: Props) {
   // Always opens on Today, so the first thing you see is what needs doing now.
   const [view, setViewState] = useState<View>("today");
@@ -85,7 +91,7 @@ export function ChoresBoard({ home, me, reloadHome }: Props) {
   const { data: board, setData: setBoard, refresh, error } = usePolled<Board>(() => api("GET", `/api/board/${week}`), [week]);
   const templates = usePolled<TemplatesData>(() => api("GET", "/api/templates"), [], 60000);
   const [sheet, setSheet] = useState<
-    { kind: "add"; memberId: string | null } | { kind: "item"; itemId: string } | { kind: "menu" } | null
+    { kind: "add"; memberId: string } | { kind: "item"; itemId: string } | { kind: "menu" } | null
   >(null);
 
   const chores = useMemo(() => new Map(home.chores.map((c) => [c.id, c])), [home.chores]);
@@ -126,10 +132,12 @@ export function ChoresBoard({ home, me, reloadHome }: Props) {
     mutate(() => api("POST", `/api/items/${item.id}/completions`, { memberId: me.id, day: slot.day ?? undefined }));
   };
 
-  const columns: { key: string; member: Member | null }[] = [
-    ...home.members.map((m) => ({ key: m.id, member: m })),
-    { key: UNASSIGNED, member: null },
-  ];
+  const handOver = (item: BoardItem, from: string | null, to: string) => {
+    if (!board || from === to) return;
+    const assigneeIds = [...new Set([...item.assigneeIds.filter((id) => id !== from), to])];
+    setBoard({ ...board, items: board.items.map((i) => (i.id === item.id ? { ...i, assigneeIds } : i)) });
+    mutate(() => api("PATCH", `/api/items/${item.id}`, { assigneeIds }));
+  };
 
   const weekNav = (
     <div className="week-nav">
@@ -154,12 +162,9 @@ export function ChoresBoard({ home, me, reloadHome }: Props) {
   return (
     <section className="page">
       <header className="page-head">
-        <div className="segmented four" role="tablist" aria-label="Chores view">
+        <div className="segmented three" role="tablist" aria-label="Chores view">
           <button role="tab" aria-selected={view === "today"} onClick={() => setView("today")}>
             ☀️ Today
-          </button>
-          <button role="tab" aria-selected={view === "board"} onClick={() => setView("board")}>
-            🧺 Board
           </button>
           <button role="tab" aria-selected={view === "calendar"} onClick={() => setView("calendar")}>
             🗓️ Calendar
@@ -168,7 +173,6 @@ export function ChoresBoard({ home, me, reloadHome }: Props) {
             📋 Templates
           </button>
         </div>
-        {view === "board" && weekNav}
         {view !== "templates" && activeTemplate && (
           <p className="using-template">
             Planning from <button className="link" onClick={() => setView("templates")}>{activeTemplate.name}</button>
@@ -190,10 +194,21 @@ export function ChoresBoard({ home, me, reloadHome }: Props) {
 
       {view === "today" &&
         (board && board.week === home.currentWeek ? (
-          <TodayChores
-            ticking={{ board, chores, members: home.members, me, today: home.today, toggle, waitingFor }}
-            onOpenItem={(itemId) => setSheet({ kind: "item", itemId })}
-          />
+          <>
+            {home.chores.length === 0 && activeTemplate && me && (
+              <StarterChores
+                templateId={activeTemplate.id}
+                week={week}
+                me={me}
+                onAdded={() => (reloadHome(), refresh(), templates.refresh())}
+              />
+            )}
+            <TodayChores
+              ticking={{ board, chores, members: home.members, me, today: home.today, toggle, waitingFor }}
+              planning={{ handOver, onAdd: (memberId) => setSheet({ kind: "add", memberId }) }}
+              onOpenItem={(itemId) => setSheet({ kind: "item", itemId })}
+            />
+          </>
         ) : (
           <p className="empty">{error ? `😿 ${error}` : "Fluffing the cushions…"}</p>
         ))}
@@ -208,34 +223,6 @@ export function ChoresBoard({ home, me, reloadHome }: Props) {
           ticking={board ? { board, chores, members: home.members, me, today: home.today, toggle, waitingFor } : null}
           onOpenItem={(itemId) => setSheet({ kind: "item", itemId })}
         />
-      )}
-
-      {view === "board" && (
-        <>
-          {error && !board && <p className="empty">😿 {error}</p>}
-          {!board && !error && <p className="empty">Fluffing the cushions…</p>}
-          {board && home.chores.length === 0 && activeTemplate && (
-            <StarterChores templateId={activeTemplate.id} week={week} onAdded={() => (reloadHome(), refresh(), templates.refresh())} />
-          )}
-          {board && isPast && board.items.length === 0 && <p className="empty">🍂 No plan was made for this week.</p>}
-          {board && !(isPast && board.items.length === 0) && (
-            <BoardColumns
-              board={board}
-              setBoard={setBoard}
-              columns={columns}
-              chores={chores}
-              members={home.members}
-              me={me}
-              today={home.today}
-              readOnlyAdd={isPast}
-              mutate={mutate}
-              toggle={toggle}
-              waitingFor={waitingFor}
-              onAdd={(memberId) => setSheet({ kind: "add", memberId })}
-              onOpen={(itemId) => setSheet({ kind: "item", itemId })}
-            />
-          )}
-        </>
       )}
 
       {sheet?.kind === "add" && (
@@ -327,195 +314,6 @@ function WeekMenu({
   );
 }
 
-// ---- board with drag and drop ----------------------------------------------
-
-interface ColumnsProps {
-  board: Board;
-  setBoard: (b: Board) => void;
-  columns: { key: string; member: Member | null }[];
-  chores: Map<string, Chore>;
-  members: Member[];
-  me: Member | null;
-  today: string;
-  readOnlyAdd: boolean;
-  mutate: (fn: () => Promise<unknown>) => Promise<void>;
-  toggle: (item: BoardItem, slot: Slot) => void;
-  waitingFor: (item: BoardItem, slot: Slot) => Chore | undefined;
-  onAdd: (memberId: string | null) => void;
-  onOpen: (itemId: string) => void;
-}
-
-// A shared chore shows in each of its people's columns, so a card's drag id is item + column.
-const cardId = (itemId: string, col: string) => `${itemId}|${col}`;
-const parseCardId = (id: string) => {
-  const [itemId, col] = id.split("|");
-  return { itemId, col };
-};
-
-function BoardColumns(props: ColumnsProps) {
-  const { board, setBoard, columns, chores, members, me, today, mutate } = props;
-  const [activeId, setActiveId] = useState<string | null>(null);
-  // While dragging, the layout lives here so background refreshes can't yank cards around.
-  const [dragLayout, setDragLayout] = useState<Record<string, string[]> | null>(null);
-
-  const layout = useMemo(() => {
-    const out: Record<string, string[]> = Object.fromEntries(columns.map((c) => [c.key, [] as string[]]));
-    for (const item of [...board.items].sort((a, b) => a.position - b.position)) {
-      const cols = item.assigneeIds.filter((id) => id in out);
-      for (const col of cols.length ? cols : [UNASSIGNED]) out[col].push(cardId(item.id, col));
-    }
-    return out;
-  }, [board.items, columns]);
-  const current = dragLayout ?? layout;
-  const itemsById = useMemo(() => new Map(board.items.map((i) => [i.id, i])), [board.items]);
-  const completionsByItem = useMemo(() => {
-    const map = new Map<string, Completion[]>();
-    for (const c of board.completions) map.set(c.itemId, [...(map.get(c.itemId) ?? []), c]);
-    return map;
-  }, [board.completions]);
-
-  const sensors = useSensors(
-    // Mouse only: a pointer sensor would also grab touches, fighting the page scroll on phones.
-    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
-    // Touch needs a press-and-hold; moving the finger sooner than that scrolls instead.
-    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 8 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
-  );
-
-  const findColumn = (id: string, lay: Record<string, string[]>) =>
-    id in lay ? id : Object.keys(lay).find((k) => lay[k].includes(id));
-
-  const onDragStart = (e: DragStartEvent) => {
-    // A little buzz so you can feel the card has been picked up (Android only).
-    navigator.vibrate?.(12);
-    setActiveId(String(e.active.id));
-    setDragLayout(layout);
-  };
-
-  const onDragOver = ({ active, over }: DragOverEvent) => {
-    if (!over || !dragLayout) return;
-    const from = findColumn(String(active.id), dragLayout);
-    const to = findColumn(String(over.id), dragLayout);
-    if (!from || !to || from === to) return;
-    const target = dragLayout[to];
-    const overIndex = target.indexOf(String(over.id));
-    const insertAt = overIndex >= 0 ? overIndex : target.length;
-    setDragLayout({
-      ...dragLayout,
-      [from]: dragLayout[from].filter((id) => id !== active.id),
-      [to]: [...target.slice(0, insertAt), String(active.id), ...target.slice(insertAt)],
-    });
-  };
-
-  const onDragEnd = ({ active, over }: DragEndEvent) => {
-    const lay = dragLayout;
-    setActiveId(null);
-    setDragLayout(null);
-    if (!over || !lay) return;
-    const dragId = String(active.id);
-    const { itemId, col: fromCol } = parseCardId(dragId);
-    const toCol = findColumn(dragId, lay)!;
-    let ids = lay[toCol];
-    const overIndex = ids.indexOf(String(over.id));
-    const fromIndex = ids.indexOf(dragId);
-    if (overIndex >= 0 && overIndex !== fromIndex) {
-      ids = [...ids];
-      ids.splice(fromIndex, 1);
-      ids.splice(overIndex, 0, dragId);
-    }
-    const index = ids.indexOf(dragId);
-    const neighbour = (i: number) => (ids[i] ? itemsById.get(parseCardId(ids[i]).itemId)?.position : undefined);
-    const before = neighbour(index - 1);
-    const after = neighbour(index + 1);
-    const position =
-      before !== undefined && after !== undefined
-        ? (before + after) / 2
-        : before !== undefined
-          ? before + 1
-          : after !== undefined
-            ? after - 1
-            : 1;
-    const item = itemsById.get(itemId)!;
-    // Moving a card hands that person's share to whoever it's dropped on.
-    let assigneeIds = item.assigneeIds;
-    if (fromCol !== toCol) {
-      assigneeIds = assigneeIds.filter((id) => id !== fromCol);
-      if (toCol !== UNASSIGNED && !assigneeIds.includes(toCol)) assigneeIds = [...assigneeIds, toCol];
-    }
-    if (assigneeIds === item.assigneeIds && item.position === position) return;
-    setBoard({ ...board, items: board.items.map((i) => (i.id === itemId ? { ...i, assigneeIds, position } : i)) });
-    mutate(() => api("PATCH", `/api/items/${itemId}`, { assigneeIds, position }));
-  };
-
-  const active = activeId ? itemsById.get(parseCardId(activeId).itemId) : undefined;
-  const cardProps = (item: BoardItem) => {
-    const { slots, extra } = slotsFor(item, board.week, completionsByItem.get(item.id) ?? []);
-    return {
-      item,
-      chore: chores.get(item.choreId),
-      slots,
-      extra,
-      members,
-      today,
-      waitingFor: (slot: Slot) => props.waitingFor(item, slot),
-    };
-  };
-
-  return (
-    <DndContext
-      sensors={sensors}
-      collisionDetection={closestCorners}
-      onDragStart={onDragStart}
-      onDragOver={onDragOver}
-      onDragEnd={onDragEnd}
-      onDragCancel={() => (setActiveId(null), setDragLayout(null))}
-    >
-      <div className="board">
-        {columns.map(({ key, member }) => {
-          const ids = current[key] ?? [];
-          const items = ids.map((id) => itemsById.get(parseCardId(id).itemId)!).filter(Boolean);
-          const planned = items.reduce((sum, i) => sum + itemMinutes(i, chores), 0);
-          const done = member
-            ? board.completions.reduce((sum, c) => {
-                const it = itemsById.get(c.itemId);
-                return it && creditedMembers(c.memberId, it.assigneeIds).includes(member.id) ? sum + tickMinutes(it, chores) : sum;
-              }, 0)
-            : 0;
-          return (
-            <Column
-              key={key}
-              id={key}
-              member={member}
-              summary={member ? `${formatMinutes(done)} done · ${formatMinutes(planned)} planned` : `${items.length} up for grabs`}
-              onAdd={props.readOnlyAdd ? undefined : () => props.onAdd(member?.id ?? null)}
-            >
-              <SortableContext items={ids} strategy={verticalListSortingStrategy}>
-                {ids.map((id) => {
-                  const item = itemsById.get(parseCardId(id).itemId);
-                  if (!item) return null;
-                  return (
-                    <SortableCard
-                      key={id}
-                      id={id}
-                      {...cardProps(item)}
-                      canComplete={!!me && (item.assigneeIds.includes(me.id) || item.assigneeIds.length === 0)}
-                      onToggle={(slot) => props.toggle(item, slot)}
-                      onOpen={() => props.onOpen(item.id)}
-                    />
-                  );
-                })}
-              </SortableContext>
-            </Column>
-          );
-        })}
-      </div>
-      <DragOverlay dropAnimation={{ duration: 180, easing: "ease-out" }}>
-        {active && <ChoreCard {...cardProps(active)} lifted />}
-      </DragOverlay>
-    </DndContext>
-  );
-}
-
 export const itemMinutes = (i: BoardItem, chores: Map<string, Chore>) => {
   const c = chores.get(i.choreId);
   return c ? weeklyMinutes(c.minutes, c.per, goesPerWeek(i), i.everyWeeks) : 0;
@@ -524,43 +322,6 @@ export const tickMinutes = (i: BoardItem, chores: Map<string, Chore>) => {
   const c = chores.get(i.choreId);
   return c ? minutesPerCompletion(c.minutes, c.per, goesPerWeek(i), i.everyWeeks) : 0;
 };
-
-function Column({
-  id,
-  member,
-  summary,
-  onAdd,
-  children,
-}: {
-  id: string;
-  member: Member | null;
-  summary: string;
-  onAdd?: () => void;
-  children: React.ReactNode;
-}) {
-  const { setNodeRef, isOver } = useDroppable({ id });
-  return (
-    <div
-      ref={setNodeRef}
-      className={`column ${isOver ? "over" : ""} ${member ? "" : "grabs"}`}
-      style={member ? ({ "--col": memberColor(member.color) } as React.CSSProperties) : undefined}
-    >
-      <div className="column-head">
-        {member ? <Avatar member={member} /> : <span className="avatar grabs-avatar">🎁</span>}
-        <div>
-          <h3>{member ? member.name : "Up for grabs"}</h3>
-          <small>{summary}</small>
-        </div>
-      </div>
-      <div className="column-body">{children}</div>
-      {onAdd && (
-        <button className="add-card" onClick={onAdd}>
-          + Add a chore
-        </button>
-      )}
-    </div>
-  );
-}
 
 interface CardProps {
   item: BoardItem;
@@ -575,21 +336,6 @@ interface CardProps {
   onToggle?: (slot: Slot) => void;
   onOpen?: () => void;
   lifted?: boolean;
-}
-
-function SortableCard({ id, ...props }: CardProps & { id: string }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
-  return (
-    <div
-      ref={setNodeRef}
-      style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.35 : 1 }}
-      {...attributes}
-      {...listeners}
-      aria-roledescription="Draggable chore. Press space to pick up, arrows to move."
-    >
-      <ChoreCard {...props} />
-    </div>
-  );
 }
 
 // Stops presses on buttons inside a card from also starting a drag.
@@ -719,7 +465,7 @@ function AddItemSheet({
   onAdded,
 }: {
   week: string;
-  memberId: string | null;
+  memberId: string;
   members: Member[];
   chores: Chore[];
   templateRules: (Schedule & { choreId: string })[];
@@ -729,7 +475,7 @@ function AddItemSheet({
   const [step, setStep] = useState<"pick" | "new" | "details">(chores.length ? "pick" : "new");
   const [chore, setChore] = useState<Chore | null>(null);
   const [schedule, setSchedule] = useState<Schedule>(NEW_SCHEDULE);
-  const [assigneeIds, setAssigneeIds] = useState<string[]>(memberId ? [memberId] : []);
+  const [assigneeIds, setAssigneeIds] = useState<string[]>([memberId]);
   const [busy, setBusy] = useState(false);
   const who = members.find((m) => m.id === memberId);
 
@@ -797,7 +543,7 @@ function AddItemSheet({
           </div>
           <button
             className="btn primary"
-            disabled={busy}
+            disabled={busy || assigneeIds.length === 0}
             onClick={async () => {
               setBusy(true);
               const ok = await attempt(() => api("POST", `/api/board/${week}/items`, { choreId: chore.id, assigneeIds, ...schedule }));
@@ -859,7 +605,11 @@ function ItemSheet({
             <AssigneePicker
               members={members}
               value={item.assigneeIds}
-              onChange={(ids) => run(() => api("PATCH", `/api/items/${item.id}`, { assigneeIds: ids }), false)}
+              onChange={(ids) =>
+                ids.length
+                  ? run(() => api("PATCH", `/api/items/${item.id}`, { assigneeIds: ids }), false)
+                  : toast("Every chore needs someone — pick another person first")
+              }
             />
           </div>
           <div className="field">
@@ -913,14 +663,25 @@ const STARTERS: (Omit<Chore, "id"> & Partial<Schedule>)[] = [
   { title: "Change the bedsheets", emoji: "🛏️", minutes: 30, per: "each", kind: "days", days: 0b1000000, everyWeeks: 2 },
 ];
 
-function StarterChores({ templateId, week, onAdded }: { templateId: string; week: string; onAdded: () => void }) {
+function StarterChores({
+  templateId,
+  week,
+  me,
+  onAdded,
+}: {
+  templateId: string;
+  week: string;
+  me: Member;
+  onAdded: () => void;
+}) {
   const [busy, setBusy] = useState(false);
   return (
     <div className="card starter">
       <h3>🌱 An empty board!</h3>
       <p>
-        Add chores with the “+ Add a chore” buttons, or start with a handful of common ones. They all start up for grabs,
-        so you can drag them to people, and they go into the template in use so every week starts the same way.
+        Add chores with the “+ Add a chore” buttons, or start with a handful of common ones. They'll all be yours to begin
+        with — drag them onto other people to share them out. They go into the template in use, so every week starts the
+        same way.
       </p>
       <button
         className="btn primary"
@@ -931,8 +692,8 @@ function StarterChores({ templateId, week, onAdded }: { templateId: string; week
             for (const { title, emoji, minutes, per, ...rest } of STARTERS) {
               const chore = await api<Chore>("POST", "/api/chores", { title, emoji, minutes, per });
               const schedule = { ...NEW_SCHEDULE, ...rest };
-              await api("POST", `/api/templates/${templateId}/rules`, { choreId: chore.id, assigneeIds: [], anchorWeek: week, ...schedule });
-              await api("POST", `/api/board/${week}/items`, { choreId: chore.id, assigneeIds: [], ...schedule, everyWeeks: 1 });
+              // Adding the rule puts it on this week's board too (the board follows the template in use).
+              await api("POST", `/api/templates/${templateId}/rules`, { choreId: chore.id, assigneeIds: [me.id], anchorWeek: week, ...schedule });
             }
           });
           setBusy(false);

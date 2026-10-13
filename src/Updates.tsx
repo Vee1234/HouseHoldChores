@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { type Board, type HomeData, type Member, addDays, formatTime } from "../shared/core";
 import { api } from "./api";
 import { AssigneeAvatars, slotStatus, slotsFor } from "./choreParts";
@@ -16,8 +17,11 @@ function timeAgo(ms: number): string {
 const dayName = (day: string) =>
   new Date(day + "T00:00:00Z").toLocaleDateString(undefined, { weekday: "short", timeZone: "UTC" });
 
-/** What's been done lately, and what's due or overdue and still not done. */
-export function Updates({ home, me }: { home: HomeData; me: Member | null }) {
+/**
+ * What's due or overdue and still not done, then what's been done lately.
+ * `between` is shown between the two (the Today page puts reminders there).
+ */
+export function Updates({ home, me, between }: { home: HomeData; me: Member | null; between?: ReactNode }) {
   const lastWeek = addDays(home.currentWeek, -7);
   const { data } = usePolled<Board[]>(
     () => Promise.all([api("GET", `/api/board/${home.currentWeek}`), api("GET", `/api/board/${lastWeek}`)]),
@@ -106,6 +110,8 @@ export function Updates({ home, me }: { home: HomeData; me: Member | null }) {
           </ul>
         )}
       </div>
+
+      {between}
 
       <div className="card">
         <h2>✅ Recently done</h2>

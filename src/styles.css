@@ -2289,3 +2289,33 @@ code.version {
   color: var(--ink-soft);
   font-weight: 700;
 }
+
+/* ---- today view: a box per person ---- */
+
+.person-boxes {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1fr;
+  align-items: start;
+}
+@media (min-width: 760px) {
+  .person-boxes {
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  }
+}
+.box-empty {
+  margin: 0;
+  color: var(--ink-soft);
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+.column h4.any-day-head {
+  margin: 4px 0 0;
+  font-family: var(--font-head);
+  font-weight: 600;
+}
+.needs-someone {
+  border-style: dashed;
+  border-top: 6px dashed var(--danger);
+  background: color-mix(in srgb, var(--danger) 6%, var(--paper));
+}

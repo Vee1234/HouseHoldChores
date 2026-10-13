@@ -182,6 +182,13 @@ async function ownMember(env: Env, hh: HouseholdRow, id: unknown): Promise<strin
 const ITEM_COLUMNS = "bi.*, (SELECT group_concat(member_id) FROM item_assignees a WHERE a.item_id = bi.id) AS assignees";
 const RULE_COLUMNS = "r.*, (SELECT group_concat(member_id) FROM rule_assignees a WHERE a.rule_id = r.id) AS assignees";
 
+/** Every chore needs at least one person doing it. */
+async function someMembers(env: Env, hh: HouseholdRow, ids: unknown): Promise<string[]> {
+  const members = await ownMembers(env, hh, ids);
+  if (!members.length) throw new HttpError(400, "Pick at least one person for this chore");
+  return members;
+}
+
 async function ownMembers(env: Env, hh: HouseholdRow, ids: unknown): Promise<string[]> {
   if (ids === undefined || ids === null) return [];
   if (!Array.isArray(ids)) throw new HttpError(400, "assigneeIds must be a list");
@@ -700,7 +707,7 @@ route("POST", "/api/board/:week/items", async ({ env, hh, body, params }) => {
   const rule = (await rulesOf(env, hh.active_template_id)).find((r) => r.chore_id === chore.id);
   const schedule = readSchedule(body, rule ? mapSchedule(rule) : undefined);
   await checkAfter(env, hh, schedule, chore.id);
-  const assigneeIds = await ownMembers(env, hh, body.assigneeIds);
+  const assigneeIds = await someMembers(env, hh, body.assigneeIds);
   const maxPos = await env.DB.prepare(
     "SELECT COALESCE(MAX(position), 0) AS p FROM board_items WHERE household_id = ? AND week = ?",
   )
@@ -726,7 +733,7 @@ route("PATCH", "/api/items/:id", async ({ env, hh, body, params }) => {
     ).bind(position, schedule.kind, schedule.timesPerWeek, schedule.days, schedule.everyWeeks, schedule.time, schedule.afterChoreId, row.id),
   ];
   if ("assigneeIds" in body)
-    statements.push(...replaceAssignees(env, "item_assignees", row.id, await ownMembers(env, hh, body.assigneeIds)));
+    statements.push(...replaceAssignees(env, "item_assignees", row.id, await someMembers(env, hh, body.assigneeIds)));
   await env.DB.batch(statements);
   await markWeekModified(env, hh, row.week);
   return json({ ok: true });
@@ -914,7 +921,7 @@ route("POST", "/api/templates/:id/rules", async ({ env, hh, body, params }) => {
   const schedule = readSchedule(body);
   await checkAfter(env, hh, schedule, chore.id);
   const anchorWeek = typeof body.anchorWeek === "string" && isWeekKey(body.anchorWeek) ? body.anchorWeek : currentWeek(hh);
-  const assigneeIds = await ownMembers(env, hh, body.assigneeIds);
+  const assigneeIds = await someMembers(env, hh, body.assigneeIds);
   const maxPos = await env.DB.prepare("SELECT COALESCE(MAX(position), 0) AS p FROM template_rules WHERE template_id = ?")
     .bind(t.id)
     .first<number>("p");
@@ -955,7 +962,7 @@ route("PATCH", "/api/rules/:id", async ({ env, hh, body, params }) => {
     ).bind(schedule.kind, schedule.timesPerWeek, schedule.days, schedule.everyWeeks, anchorWeek, position, schedule.time, schedule.afterChoreId, row.id),
   ];
   if ("assigneeIds" in body)
-    statements.push(...replaceAssignees(env, "rule_assignees", row.id, await ownMembers(env, hh, body.assigneeIds)));
+    statements.push(...replaceAssignees(env, "rule_assignees", row.id, await someMembers(env, hh, body.assigneeIds)));
   await env.DB.batch(statements);
   await templateChanged(env, hh, row.template_id, [row.chore_id]);
   return json({ ok: true });
