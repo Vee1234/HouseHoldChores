@@ -1,0 +1,20 @@
+{
+  "name": "Cosy Chores",
+  "short_name": "Chores",
+  "description": "Share the housework, tick chores off, set reminders and pin notes for the family.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#fbf3e6",
+  "theme_color": "#fbf3e6",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Chore board", "url": "/?tab=chores" },
+    { "name": "Reminders", "url": "/?tab=reminders" }
+  ]
+}

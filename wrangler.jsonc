@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cosy-chores",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-09-01",
+  "assets": {
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "cosy-chores",
+      "database_id": "e259aa46-a4a5-4358-abaa-abfc7c11dfe0",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // Checks for due reminders and day-ahead announcements every minute.
+  "triggers": { "crons": ["* * * * *"] },
+  "observability": { "enabled": true }
+}

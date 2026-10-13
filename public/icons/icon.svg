@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#fbe7cf"/>
+  <circle cx="256" cy="300" r="190" fill="#f8d9b6"/>
+  <!-- chimney + heart puff -->
+  <rect x="318" y="112" width="44" height="78" rx="10" fill="#b5644a"/>
+  <path d="M352 92c-9-16-34-12-34 7 0 16 22 28 34 37 12-9 34-21 34-37 0-19-25-23-34-7z" fill="#e8738a"/>
+  <!-- walls -->
+  <rect x="130" y="232" width="252" height="176" rx="34" fill="#fff6e8"/>
+  <!-- roof -->
+  <path d="M104 248 L256 128 L408 248" fill="none" stroke="#d9734e" stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- face -->
+  <circle cx="214" cy="300" r="12" fill="#4a3428"/>
+  <circle cx="298" cy="300" r="12" fill="#4a3428"/>
+  <circle cx="190" cy="328" r="14" fill="#f4a3a3" opacity=".8"/>
+  <circle cx="322" cy="328" r="14" fill="#f4a3a3" opacity=".8"/>
+  <path d="M236 322q20 20 40 0" fill="none" stroke="#4a3428" stroke-width="9" stroke-linecap="round"/>
+  <!-- door -->
+  <path d="M232 408v-40a24 24 0 0 1 48 0v40z" fill="#81b29a"/>
+</svg>
