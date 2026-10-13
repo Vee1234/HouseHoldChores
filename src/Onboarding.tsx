@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Member } from "../shared/core";
 import { api, session } from "./api";
-import { AVATARS, Avatar, ColorChoices, EmojiChoices, attempt } from "./ui";
+import { Avatar, BuddyChoices, ColorChoices, attempt } from "./ui";
 
 type Step = "welcome" | "create" | "join" | "pick";
 
@@ -12,7 +12,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
 
   const [houseName, setHouseName] = useState("");
   const [name, setName] = useState("");
-  const [emoji, setEmoji] = useState("🐻");
+  const [buddy, setBuddy] = useState("bear");
   const [color, setColor] = useState("pumpkin");
   const [code, setCode] = useState("");
   const [members, setMembers] = useState<Member[]>([]);
@@ -29,7 +29,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
       const res = await api("POST", "/api/households", {
         name: houseName,
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        member: { name, emoji, color },
+        member: { name, buddy, color },
       });
       session.setToken(res.token);
       session.setMe(res.memberId);
@@ -52,7 +52,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
 
   const addSelf = () =>
     run(async () => {
-      const m = await api("POST", "/api/members", { name, emoji, color });
+      const m = await api("POST", "/api/members", { name, buddy, color });
       session.setMe(m.id);
       onDone();
     });
@@ -71,7 +71,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
       </label>
       <div className="field">
         <span>Pick a buddy</span>
-        <EmojiChoices options={AVATARS} value={emoji} onChange={setEmoji} label="Avatar" />
+        <BuddyChoices value={buddy} onChange={setBuddy} />
       </div>
       <div className="field">
         <span>Your colour</span>

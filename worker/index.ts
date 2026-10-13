@@ -1,18 +1,27 @@
 import {
   type Board,
+  type CalendarDay,
   type Per,
   type Repeat,
+  type Schedule,
   type WeekStats,
-  TEMPLATE,
   addDays,
+  appliesToWeek,
+  blockingChore,
+  formatTime,
+  creditedMembers,
   dayKey,
+  goesPerWeek,
   isWeekKey,
   localParts,
   minutesPerCompletion,
   nextDue,
+  scheduledDays,
   weekOf,
+  weekdayIndex,
   weeklyMinutes,
 } from "../shared/core";
+import { DEFAULT_BUDDY, buddyById, isBuddyId } from "../shared/pixelBuddies";
 import { type PushMessage, type VapidKeys, sendPush } from "./push";
 
 interface Env {
@@ -28,6 +37,7 @@ interface HouseholdRow {
   name: string;
   join_code: string;
   timezone: string;
+  active_template_id: string | null;
 }
 
 interface Ctx {
@@ -96,21 +106,45 @@ function validTimezone(tz: unknown): string {
 
 // ---- row mapping ------------------------------------------------------------
 
-const mapMember = (r: any) => ({ id: r.id, name: r.name, emoji: r.emoji, color: r.color, position: r.position });
-const mapChore = (r: any) => ({
+const mapMember = (r: any) => ({
   id: r.id,
-  title: r.title,
+  name: r.name,
   emoji: r.emoji,
-  minutes: r.minutes,
-  per: r.per,
+  buddy: r.buddy,
+  color: r.color,
+  position: r.position,
+});
+
+/** Validates a buddy choice; the emoji always follows the buddy. */
+function readBuddy(value: unknown, fallback = DEFAULT_BUDDY) {
+  const buddy = value === undefined ? fallback : value;
+  if (!isBuddyId(buddy)) throw new HttpError(400, "Unknown buddy");
+  return { buddy, emoji: buddyById(buddy).emoji };
+}
+const mapChore = (r: any) => ({ id: r.id, title: r.title, emoji: r.emoji, minutes: r.minutes, per: r.per });
+const splitIds = (ids: string | null): string[] => (ids ? ids.split(",") : []);
+const mapSchedule = (r: any): Schedule => ({
+  kind: r.kind,
   timesPerWeek: r.times_per_week,
+  days: r.days,
+  everyWeeks: r.every_weeks,
+  time: r.time ?? null,
+  afterChoreId: r.after_chore_id ?? null,
 });
 const mapItem = (r: any) => ({
   id: r.id,
   choreId: r.chore_id,
-  memberId: r.member_id,
+  assigneeIds: splitIds(r.assignees),
   position: r.position,
-  timesPerWeek: r.times_per_week,
+  ...mapSchedule(r),
+});
+const mapRule = (r: any) => ({
+  id: r.id,
+  choreId: r.chore_id,
+  assigneeIds: splitIds(r.assignees),
+  anchorWeek: r.anchor_week,
+  position: r.position,
+  ...mapSchedule(r),
 });
 const mapAnnouncement = (r: any) => ({
   id: r.id,
@@ -144,70 +178,154 @@ async function ownMember(env: Env, hh: HouseholdRow, id: unknown): Promise<strin
   return id as string;
 }
 
-function cloneTemplateStatements(env: Env, hh: HouseholdRow, week: string, items: any[]) {
-  return items.map((it) =>
-    env.DB.prepare(
-      "INSERT INTO board_items (id, household_id, week, chore_id, member_id, position, times_per_week) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    ).bind(uid(), hh.id, week, it.chore_id, it.member_id, it.position, it.times_per_week),
-  );
+// Rows with their assignees folded in as a comma-separated list.
+const ITEM_COLUMNS = "bi.*, (SELECT group_concat(member_id) FROM item_assignees a WHERE a.item_id = bi.id) AS assignees";
+const RULE_COLUMNS = "r.*, (SELECT group_concat(member_id) FROM rule_assignees a WHERE a.rule_id = r.id) AS assignees";
+
+async function ownMembers(env: Env, hh: HouseholdRow, ids: unknown): Promise<string[]> {
+  if (ids === undefined || ids === null) return [];
+  if (!Array.isArray(ids)) throw new HttpError(400, "assigneeIds must be a list");
+  const unique = [...new Set(ids.map(String))];
+  if (!unique.length) return [];
+  const { results } = await env.DB.prepare(
+    `SELECT id FROM members WHERE household_id = ? AND id IN (${unique.map(() => "?").join(",")})`,
+  )
+    .bind(hh.id, ...unique)
+    .all();
+  if (results.length !== unique.length) throw new HttpError(400, "Unknown family member");
+  return unique;
 }
 
-/** Makes sure a board exists, cloning the template for new weeks. Returns false for an unplanned past week. */
+/** Reads schedule fields from a request body, filling gaps from `fallback`. */
+function readSchedule(body: any, fallback?: Schedule): Schedule {
+  const kind = oneOf(body.kind ?? fallback?.kind ?? "anytime", ["anytime", "days"], "Schedule");
+  const days = kind === "days" ? int(body.days ?? fallback?.days, "Days", 1, 127) : 0;
+  const timesPerWeek =
+    kind === "days"
+      ? goesPerWeek({ kind, days, timesPerWeek: 0 })
+      : int(body.timesPerWeek ?? fallback?.timesPerWeek ?? 1, "Times per week", 1, 21);
+  const everyWeeks = int(body.everyWeeks ?? fallback?.everyWeeks ?? 1, "Every … weeks", 1, 12);
+  const rawTime = "time" in body ? body.time : fallback?.time;
+  if (rawTime && (typeof rawTime !== "string" || !/^([01]\d|2[0-3]):[0-5]\d$/.test(rawTime)))
+    throw new HttpError(400, "Time must look like 19:30");
+  // A time only makes sense for chores on set days.
+  const time = kind === "days" && rawTime ? rawTime : null;
+  const rawAfter = "afterChoreId" in body ? body.afterChoreId : fallback?.afterChoreId;
+  const afterChoreId = rawAfter ? String(rawAfter) : null;
+  return { kind, timesPerWeek, days, everyWeeks, time, afterChoreId };
+}
+
+/** Checks an "only after" constraint points at another of this household's chores. */
+async function checkAfter(env: Env, hh: HouseholdRow, schedule: Schedule, choreId: string) {
+  if (!schedule.afterChoreId) return;
+  if (schedule.afterChoreId === choreId) throw new HttpError(400, "A chore can't wait for itself");
+  const ok = await env.DB.prepare("SELECT 1 FROM chores WHERE id = ? AND household_id = ? AND archived = 0")
+    .bind(schedule.afterChoreId, hh.id)
+    .first();
+  if (!ok) throw new HttpError(400, "Unknown chore to wait for");
+}
+
+function insertItem(
+  env: Env,
+  hh: HouseholdRow,
+  week: string,
+  item: Schedule & { choreId: string; position: number },
+  assigneeIds: string[],
+) {
+  const id = uid();
+  const statements = [
+    env.DB.prepare(
+      `INSERT INTO board_items (id, household_id, week, chore_id, member_id, position, times_per_week, kind, days, every_weeks, time, after_chore_id)
+       VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      id,
+      hh.id,
+      week,
+      item.choreId,
+      item.position,
+      item.timesPerWeek,
+      item.kind,
+      item.days,
+      item.everyWeeks,
+      item.time,
+      item.afterChoreId,
+    ),
+    ...assigneeIds.map((m) =>
+      env.DB.prepare("INSERT INTO item_assignees (item_id, member_id) VALUES (?, ?)").bind(id, m),
+    ),
+  ];
+  return { id, statements };
+}
+
+function replaceAssignees(env: Env, table: "item_assignees" | "rule_assignees", id: string, memberIds: string[]) {
+  const col = table === "item_assignees" ? "item_id" : "rule_id";
+  return [
+    env.DB.prepare(`DELETE FROM ${table} WHERE ${col} = ?`).bind(id),
+    ...memberIds.map((m) => env.DB.prepare(`INSERT INTO ${table} (${col}, member_id) VALUES (?, ?)`).bind(id, m)),
+  ];
+}
+
+/** Rules of a template, skipping chores that have been deleted. */
+async function rulesOf(env: Env, templateId: string | null): Promise<any[]> {
+  if (!templateId) return [];
+  const { results } = await env.DB.prepare(
+    `SELECT ${RULE_COLUMNS} FROM template_rules r JOIN chores c ON c.id = r.chore_id
+     WHERE r.template_id = ? AND c.archived = 0 ORDER BY r.position`,
+  )
+    .bind(templateId)
+    .all();
+  return results;
+}
+
+/** Makes sure a week exists, copying the active template into it. Returns false for an unplanned past week. */
 async function ensureWeek(env: Env, hh: HouseholdRow, week: string): Promise<boolean> {
   const existing = await env.DB.prepare("SELECT 1 FROM weeks WHERE household_id = ? AND week = ?")
     .bind(hh.id, week)
     .first();
   if (existing) return true;
-  if (week !== TEMPLATE && week < currentWeek(hh)) return false;
-
-  const insertWeek = env.DB.prepare(
-    "INSERT OR IGNORE INTO weeks (household_id, week, modified, created_at) VALUES (?, ?, 0, ?)",
-  ).bind(hh.id, week, now());
-  if (week === TEMPLATE) {
-    await insertWeek.run();
-    return true;
-  }
-  await ensureWeek(env, hh, TEMPLATE);
-  const { results } = await env.DB.prepare(
-    "SELECT bi.* FROM board_items bi JOIN chores c ON c.id = bi.chore_id WHERE bi.household_id = ? AND bi.week = ? AND c.archived = 0",
+  if (week < currentWeek(hh)) return false;
+  const res = await env.DB.prepare(
+    "INSERT OR IGNORE INTO weeks (household_id, week, modified, created_at, template_id) VALUES (?, ?, 0, ?, ?)",
   )
-    .bind(hh.id, TEMPLATE)
-    .all();
-  const res = await insertWeek.run();
-  // Another request may have cloned this week at the same moment.
+    .bind(hh.id, week, now(), hh.active_template_id)
+    .run();
+  // Another request may have copied this week at the same moment.
   if (res.meta.changes === 0) return true;
-  if (results.length) await env.DB.batch(cloneTemplateStatements(env, hh, week, results));
+  const rules = (await rulesOf(env, hh.active_template_id)).filter((r) => appliesToWeek(r.every_weeks, r.anchor_week, week));
+  const statements = rules.flatMap(
+    (r) => insertItem(env, hh, week, { choreId: r.chore_id, position: r.position, ...mapSchedule(r) }, splitIds(r.assignees)).statements,
+  );
+  if (statements.length) await env.DB.batch(statements);
   return true;
 }
 
 /**
- * Called after the template changes: future weeks nobody has touched yet are
- * dropped so they re-clone from the new template when next opened.
+ * Called after the active template changes: upcoming weeks nobody has touched
+ * yet are dropped so they re-copy the template when next opened.
  */
 async function refreshUntouchedFutureWeeks(env: Env, hh: HouseholdRow) {
   const cw = currentWeek(hh);
   await env.DB.batch([
     env.DB.prepare(
       `DELETE FROM board_items WHERE household_id = ?1 AND week IN
-         (SELECT week FROM weeks WHERE household_id = ?1 AND week != 'template' AND week > ?2 AND modified = 0)`,
+         (SELECT week FROM weeks WHERE household_id = ?1 AND week > ?2 AND modified = 0)`,
     ).bind(hh.id, cw),
-    env.DB.prepare(
-      "DELETE FROM weeks WHERE household_id = ? AND week != 'template' AND week > ? AND modified = 0",
-    ).bind(hh.id, cw),
+    env.DB.prepare("DELETE FROM weeks WHERE household_id = ? AND week > ? AND modified = 0").bind(hh.id, cw),
   ]);
 }
 
-async function boardChanged(env: Env, hh: HouseholdRow, week: string) {
-  if (week === TEMPLATE) await refreshUntouchedFutureWeeks(env, hh);
-  else
-    await env.DB.prepare("UPDATE weeks SET modified = 1 WHERE household_id = ? AND week = ?")
-      .bind(hh.id, week)
-      .run();
+async function templateChanged(env: Env, hh: HouseholdRow, templateId: string) {
+  if (templateId === hh.active_template_id) await refreshUntouchedFutureWeeks(env, hh);
+}
+
+async function markWeekModified(env: Env, hh: HouseholdRow, week: string) {
+  await env.DB.prepare("UPDATE weeks SET modified = 1 WHERE household_id = ? AND week = ?").bind(hh.id, week).run();
 }
 
 async function loadBoard(env: Env, hh: HouseholdRow, week: string): Promise<Board> {
-  const [items, completions] = await env.DB.batch([
-    env.DB.prepare("SELECT * FROM board_items WHERE household_id = ? AND week = ? ORDER BY position").bind(
+  const [weekRow, items, completions] = await env.DB.batch([
+    env.DB.prepare("SELECT template_id FROM weeks WHERE household_id = ? AND week = ?").bind(hh.id, week),
+    env.DB.prepare(`SELECT ${ITEM_COLUMNS} FROM board_items bi WHERE bi.household_id = ? AND bi.week = ? ORDER BY bi.position`).bind(
       hh.id,
       week,
     ),
@@ -218,18 +336,20 @@ async function loadBoard(env: Env, hh: HouseholdRow, week: string): Promise<Boar
   ]);
   return {
     week,
+    templateId: (weekRow.results[0] as any)?.template_id ?? null,
     items: items.results.map(mapItem),
     completions: completions.results.map((r: any) => ({
       id: r.id,
       itemId: r.item_id,
       memberId: r.member_id,
       doneAt: r.done_at,
+      day: r.day,
     })),
   };
 }
 
 async function itemOf(env: Env, hh: HouseholdRow, id: string) {
-  const row = await env.DB.prepare("SELECT * FROM board_items WHERE id = ? AND household_id = ?")
+  const row = await env.DB.prepare(`SELECT ${ITEM_COLUMNS} FROM board_items bi WHERE bi.id = ? AND bi.household_id = ?`)
     .bind(id, hh.id)
     .first<any>();
   if (!row) throw new HttpError(404, "That chore isn't on the board any more");
@@ -237,8 +357,102 @@ async function itemOf(env: Env, hh: HouseholdRow, id: string) {
 }
 
 function boardWeek(param: string): string {
-  if (param === TEMPLATE || isWeekKey(param)) return param;
-  throw new HttpError(400, "Week must be 'template' or a Monday (YYYY-MM-DD)");
+  if (isWeekKey(param)) return param;
+  throw new HttpError(400, "Week must be a Monday (YYYY-MM-DD)");
+}
+
+async function templateOf(env: Env, hh: HouseholdRow, id: string) {
+  const row = await env.DB.prepare("SELECT * FROM templates WHERE id = ? AND household_id = ?").bind(id, hh.id).first<any>();
+  if (!row) throw new HttpError(404, "Template not found");
+  return row;
+}
+
+async function ruleOf(env: Env, hh: HouseholdRow, id: string) {
+  const row = await env.DB.prepare(
+    `SELECT ${RULE_COLUMNS} FROM template_rules r JOIN templates t ON t.id = r.template_id
+     WHERE r.id = ? AND t.household_id = ?`,
+  )
+    .bind(id, hh.id)
+    .first<any>();
+  if (!row) throw new HttpError(404, "That rule doesn't exist any more");
+  return row;
+}
+
+/**
+ * Switching templates midweek: this week keeps the old plan for the days
+ * already gone (and anything already ticked), and takes the new template's
+ * chores from today on.
+ */
+async function switchCurrentWeek(env: Env, hh: HouseholdRow, newTemplateId: string) {
+  const week = currentWeek(hh);
+  if (!(await ensureWeek(env, hh, week))) return;
+  const before = (1 << weekdayIndex(today(hh))) - 1; // bitmask of days before today
+  const board = await loadBoard(env, hh, week);
+  const doneByItem = new Map<string, { count: number; days: number }>();
+  for (const c of board.completions) {
+    const d = doneByItem.get(c.itemId) ?? { count: 0, days: 0 };
+    d.count++;
+    if (c.day) d.days |= 1 << weekdayIndex(c.day);
+    doneByItem.set(c.itemId, d);
+  }
+
+  const statements: D1PreparedStatement[] = [];
+  const kept = new Map<string, any>(); // chore id -> surviving item
+  for (const item of board.items) {
+    const done = doneByItem.get(item.id) ?? { count: 0, days: 0 };
+    if (item.kind === "days") {
+      const days = item.days & (before | done.days);
+      if (!days) statements.push(env.DB.prepare("DELETE FROM board_items WHERE id = ?").bind(item.id));
+      else {
+        statements.push(
+          env.DB.prepare("UPDATE board_items SET days = ?, times_per_week = ? WHERE id = ?").bind(
+            days,
+            goesPerWeek({ kind: "days", days, timesPerWeek: 0 }),
+            item.id,
+          ),
+        );
+        kept.set(item.choreId, { ...item, days });
+      }
+    } else if (!done.count) statements.push(env.DB.prepare("DELETE FROM board_items WHERE id = ?").bind(item.id));
+    else {
+      // Whatever was managed so far counts as this chore's week under the old plan.
+      statements.push(env.DB.prepare("UPDATE board_items SET times_per_week = ? WHERE id = ?").bind(done.count, item.id));
+      kept.set(item.choreId, { ...item, timesPerWeek: done.count });
+    }
+  }
+
+  const rules = (await rulesOf(env, newTemplateId)).filter((r) => appliesToWeek(r.every_weeks, r.anchor_week, week));
+  for (const r of rules) {
+    const schedule = mapSchedule(r);
+    if (schedule.kind === "days") schedule.days &= ~before;
+    if (schedule.kind === "days" && !schedule.days) continue;
+    schedule.timesPerWeek = goesPerWeek(schedule) || schedule.timesPerWeek;
+    const existing = kept.get(r.chore_id);
+    if (existing && existing.kind === schedule.kind) {
+      // Same chore under both plans: carry on with one card.
+      const days = existing.days | schedule.days;
+      const times =
+        schedule.kind === "days" ? goesPerWeek({ kind: "days", days, timesPerWeek: 0 }) : Math.max(existing.timesPerWeek, schedule.timesPerWeek);
+      statements.push(
+        env.DB.prepare(
+          "UPDATE board_items SET days = ?, times_per_week = ?, every_weeks = ?, time = ?, after_chore_id = ? WHERE id = ?",
+        ).bind(days, times, schedule.everyWeeks, schedule.time, schedule.afterChoreId, existing.id),
+        ...replaceAssignees(env, "item_assignees", existing.id, splitIds(r.assignees)),
+      );
+    } else {
+      statements.push(
+        ...insertItem(env, hh, week, { choreId: r.chore_id, position: r.position, ...schedule }, splitIds(r.assignees)).statements,
+      );
+    }
+  }
+  statements.push(
+    env.DB.prepare("UPDATE weeks SET modified = 1, template_id = ? WHERE household_id = ? AND week = ?").bind(
+      newTemplateId,
+      hh.id,
+      week,
+    ),
+  );
+  await env.DB.batch(statements);
 }
 
 // ---- push -------------------------------------------------------------------
@@ -280,6 +494,39 @@ async function notify(
   );
 }
 
+/**
+ * After a tick: anyone whose chore was waiting on this one hears they can
+ * start, if that tick is what freed their next go.
+ */
+async function notifyUnblocked(env: Env, hh: HouseholdRow, board: Board, completion: Board["completions"][number]) {
+  const done = board.items.find((i) => i.id === completion.itemId);
+  if (!done) return;
+  const after = { ...board, completions: [...board.completions, completion] };
+  const chores = new Map(
+    ((await env.DB.prepare("SELECT id, title, emoji FROM chores WHERE household_id = ?").bind(hh.id).all<any>()).results).map(
+      (c) => [c.id, c],
+    ),
+  );
+  for (const waiting of board.items.filter((i) => i.afterChoreId === done.choreId)) {
+    const day = waiting.kind === "days" ? completion.day : null;
+    if (waiting.kind === "days" && !(day && scheduledDays(waiting.days, board.week).includes(day))) continue;
+    const wasBlocked = blockingChore(waiting, day, board.items, board.completions);
+    const nowBlocked = blockingChore(waiting, day, after.items, after.completions);
+    if (!wasBlocked || nowBlocked) continue;
+    const doneChore = chores.get(done.choreId);
+    const next = chores.get(waiting.choreId);
+    for (const memberId of waiting.assigneeIds) {
+      if (memberId === completion.memberId) continue;
+      await notify(env, hh.id, memberId, {
+        title: `✅ ${doneChore?.emoji ?? ""} ${doneChore?.title ?? "A chore"} is done`,
+        body: `You can start ${next?.emoji ?? ""} ${next?.title ?? "your chore"} now.`,
+        url: "/?tab=chores",
+        tag: `unblocked-${waiting.id}-${day ?? ""}`,
+      });
+    }
+  }
+}
+
 // ---- routes -----------------------------------------------------------------
 
 type Handler = (c: Ctx) => Promise<Response>;
@@ -319,14 +566,14 @@ route("POST", "/api/members", async ({ env, hh, body }) => {
   const member = {
     id: uid(),
     name: str(body.name, "Name", 40),
-    emoji: str(body.emoji, "Emoji", 16),
+    ...readBuddy(body.buddy),
     color: str(body.color, "Colour", 20),
     position: count ?? 0,
   };
   await env.DB.prepare(
-    "INSERT INTO members (id, household_id, name, emoji, color, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO members (id, household_id, name, emoji, buddy, color, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
   )
-    .bind(member.id, hh.id, member.name, member.emoji, member.color, member.position, now())
+    .bind(member.id, hh.id, member.name, member.emoji, member.buddy, member.color, member.position, now())
     .run();
   return json(member, 201);
 });
@@ -336,10 +583,12 @@ route("PATCH", "/api/members/:id", async ({ env, hh, body, params }) => {
     .bind(params[0], hh.id)
     .first<any>();
   if (!row) throw new HttpError(404, "Member not found");
-  await env.DB.prepare("UPDATE members SET name = ?, emoji = ?, color = ? WHERE id = ?")
+  const { buddy, emoji } = readBuddy(body.buddy, row.buddy);
+  await env.DB.prepare("UPDATE members SET name = ?, emoji = ?, buddy = ?, color = ? WHERE id = ?")
     .bind(
       body.name !== undefined ? str(body.name, "Name", 40) : row.name,
-      body.emoji !== undefined ? str(body.emoji, "Emoji", 16) : row.emoji,
+      emoji,
+      buddy,
       body.color !== undefined ? str(body.color, "Colour", 20) : row.color,
       row.id,
     )
@@ -352,7 +601,38 @@ route("DELETE", "/api/members/:id", async ({ env, hh, params }) => {
   return json({ ok: true });
 });
 
-// Chore library
+// Buddy treats: one earned per go you get credit for, minus the ones already eaten.
+
+// Completions credited to member ?1: ones they ticked, plus ones ticked by a
+// fellow assignee of a shared chore they're on (see creditedMembers).
+const EARNED_SQL = `(SELECT COUNT(*) FROM completions c JOIN board_items bi ON bi.id = c.item_id
+  WHERE c.member_id = ?1 OR (
+    EXISTS (SELECT 1 FROM item_assignees a WHERE a.item_id = bi.id AND a.member_id = ?1) AND
+    EXISTS (SELECT 1 FROM item_assignees a WHERE a.item_id = bi.id AND a.member_id = c.member_id)))`;
+
+async function treatsFor(env: Env, hh: HouseholdRow, memberId: string) {
+  const row = await env.DB.prepare(`SELECT treats_fed AS fed, ${EARNED_SQL} AS earned FROM members WHERE id = ?1 AND household_id = ?2`)
+    .bind(memberId, hh.id)
+    .first<{ fed: number; earned: number }>();
+  if (!row) throw new HttpError(404, "Member not found");
+  // Unticking a go takes its treat back, but never below zero.
+  return { treats: Math.max(0, row.earned - row.fed) };
+}
+
+route("GET", "/api/members/:id/buddy", async ({ env, hh, params }) => json(await treatsFor(env, hh, params[0])));
+
+route("POST", "/api/members/:id/feed", async ({ env, hh, params }) => {
+  // Only eats a treat if one is actually available, so double taps can't overspend.
+  const res = await env.DB.prepare(
+    `UPDATE members SET treats_fed = treats_fed + 1 WHERE id = ?1 AND household_id = ?2 AND treats_fed < ${EARNED_SQL}`,
+  )
+    .bind(params[0], hh.id)
+    .run();
+  if (!res.meta.changes) throw new HttpError(400, "No treats yet — finish a chore to earn one 🍪");
+  return json(await treatsFor(env, hh, params[0]));
+});
+
+// Chore library: just the chore itself. How often and who live on rules and week items.
 
 route("POST", "/api/chores", async ({ env, hh, body }) => {
   const chore = {
@@ -361,12 +641,11 @@ route("POST", "/api/chores", async ({ env, hh, body }) => {
     emoji: str(body.emoji ?? "🧹", "Emoji", 16),
     minutes: int(body.minutes, "Minutes", 1, 6000),
     per: oneOf(body.per, PERS, "Time estimate"),
-    timesPerWeek: int(body.timesPerWeek ?? 1, "Times per week", 1, 21),
   };
   await env.DB.prepare(
-    "INSERT INTO chores (id, household_id, title, emoji, minutes, per, times_per_week, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO chores (id, household_id, title, emoji, minutes, per, times_per_week, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
   )
-    .bind(chore.id, hh.id, chore.title, chore.emoji, chore.minutes, chore.per, chore.timesPerWeek, now())
+    .bind(chore.id, hh.id, chore.title, chore.emoji, chore.minutes, chore.per, now())
     .run();
   return json(chore, 201);
 });
@@ -376,97 +655,116 @@ route("PATCH", "/api/chores/:id", async ({ env, hh, body, params }) => {
     .bind(params[0], hh.id)
     .first<any>();
   if (!row) throw new HttpError(404, "Chore not found");
-  await env.DB.prepare("UPDATE chores SET title = ?, emoji = ?, minutes = ?, per = ?, times_per_week = ? WHERE id = ?")
+  await env.DB.prepare("UPDATE chores SET title = ?, emoji = ?, minutes = ?, per = ? WHERE id = ?")
     .bind(
       body.title !== undefined ? str(body.title, "Chore name", 80) : row.title,
       body.emoji !== undefined ? str(body.emoji, "Emoji", 16) : row.emoji,
       body.minutes !== undefined ? int(body.minutes, "Minutes", 1, 6000) : row.minutes,
       body.per !== undefined ? oneOf(body.per, PERS, "Time estimate") : row.per,
-      body.timesPerWeek !== undefined ? int(body.timesPerWeek, "Times per week", 1, 21) : row.times_per_week,
       row.id,
     )
     .run();
   return json({ ok: true });
 });
 
-// Removing a chore keeps past weeks' history but takes it off the template and upcoming weeks.
+// Deleting a chore keeps past weeks' history but removes it from every template and from this week on.
 route("DELETE", "/api/chores/:id", async ({ env, hh, params }) => {
   const cw = currentWeek(hh);
   await env.DB.batch([
     env.DB.prepare("UPDATE chores SET archived = 1 WHERE id = ? AND household_id = ?").bind(params[0], hh.id),
     env.DB.prepare(
-      "DELETE FROM board_items WHERE chore_id = ? AND household_id = ? AND (week = 'template' OR week >= ?)",
-    ).bind(params[0], hh.id, cw),
+      "DELETE FROM template_rules WHERE chore_id = ? AND template_id IN (SELECT id FROM templates WHERE household_id = ?)",
+    ).bind(params[0], hh.id),
+    env.DB.prepare("DELETE FROM board_items WHERE chore_id = ? AND household_id = ? AND week >= ?").bind(params[0], hh.id, cw),
   ]);
   return json({ ok: true });
 });
 
-// Boards (template + weeks)
+// Week boards
 
 route("GET", "/api/board/:week", async ({ env, hh, params }) => {
   const week = boardWeek(params[0]);
   const exists = await ensureWeek(env, hh, week);
-  if (!exists) return json({ week, items: [], completions: [] } satisfies Board);
+  if (!exists) return json({ week, templateId: null, items: [], completions: [] } satisfies Board);
   return json(await loadBoard(env, hh, week));
 });
 
 route("POST", "/api/board/:week/items", async ({ env, hh, body, params }) => {
   const week = boardWeek(params[0]);
   if (!(await ensureWeek(env, hh, week))) throw new HttpError(400, "That week has already passed");
-  const chore = await env.DB.prepare("SELECT * FROM chores WHERE id = ? AND household_id = ? AND archived = 0")
+  const chore = await env.DB.prepare("SELECT id FROM chores WHERE id = ? AND household_id = ? AND archived = 0")
     .bind(body.choreId, hh.id)
     .first<any>();
   if (!chore) throw new HttpError(400, "Unknown chore");
-  const memberId = await ownMember(env, hh, body.memberId);
+  // Without a schedule given, use what the active template says for this chore.
+  const rule = (await rulesOf(env, hh.active_template_id)).find((r) => r.chore_id === chore.id);
+  const schedule = readSchedule(body, rule ? mapSchedule(rule) : undefined);
+  await checkAfter(env, hh, schedule, chore.id);
+  const assigneeIds = await ownMembers(env, hh, body.assigneeIds);
   const maxPos = await env.DB.prepare(
     "SELECT COALESCE(MAX(position), 0) AS p FROM board_items WHERE household_id = ? AND week = ?",
   )
     .bind(hh.id, week)
     .first<number>("p");
-  const item = {
-    id: uid(),
-    choreId: chore.id,
-    memberId,
-    position: (maxPos ?? 0) + 1,
-    timesPerWeek: body.timesPerWeek !== undefined ? int(body.timesPerWeek, "Times per week", 1, 21) : chore.times_per_week,
-  };
-  await env.DB.prepare(
-    "INSERT INTO board_items (id, household_id, week, chore_id, member_id, position, times_per_week) VALUES (?, ?, ?, ?, ?, ?, ?)",
-  )
-    .bind(item.id, hh.id, week, item.choreId, item.memberId, item.position, item.timesPerWeek)
-    .run();
-  await boardChanged(env, hh, week);
-  return json(item, 201);
+  const position = (maxPos ?? 0) + 1;
+  const { id, statements } = insertItem(env, hh, week, { choreId: chore.id, position, ...schedule }, assigneeIds);
+  await env.DB.batch(statements);
+  await markWeekModified(env, hh, week);
+  return json({ id, choreId: chore.id, assigneeIds, position, ...schedule }, 201);
 });
 
 route("PATCH", "/api/items/:id", async ({ env, hh, body, params }) => {
   const row = await itemOf(env, hh, params[0]);
-  const memberId = "memberId" in body ? await ownMember(env, hh, body.memberId) : row.member_id;
   const position = body.position !== undefined ? Number(body.position) : row.position;
   if (!Number.isFinite(position)) throw new HttpError(400, "Bad position");
-  const times = body.timesPerWeek !== undefined ? int(body.timesPerWeek, "Times per week", 1, 21) : row.times_per_week;
-  await env.DB.prepare("UPDATE board_items SET member_id = ?, position = ?, times_per_week = ? WHERE id = ?")
-    .bind(memberId, position, times, row.id)
-    .run();
-  await boardChanged(env, hh, row.week);
+  const touchesSchedule = ["kind", "timesPerWeek", "days", "everyWeeks", "time", "afterChoreId"].some((k) => k in body);
+  const schedule = touchesSchedule ? readSchedule(body, mapSchedule(row)) : mapSchedule(row);
+  await checkAfter(env, hh, schedule, row.chore_id);
+  const statements = [
+    env.DB.prepare(
+      "UPDATE board_items SET position = ?, kind = ?, times_per_week = ?, days = ?, every_weeks = ?, time = ?, after_chore_id = ? WHERE id = ?",
+    ).bind(position, schedule.kind, schedule.timesPerWeek, schedule.days, schedule.everyWeeks, schedule.time, schedule.afterChoreId, row.id),
+  ];
+  if ("assigneeIds" in body)
+    statements.push(...replaceAssignees(env, "item_assignees", row.id, await ownMembers(env, hh, body.assigneeIds)));
+  await env.DB.batch(statements);
+  await markWeekModified(env, hh, row.week);
   return json({ ok: true });
 });
 
 route("DELETE", "/api/items/:id", async ({ env, hh, params }) => {
   const row = await itemOf(env, hh, params[0]);
   await env.DB.prepare("DELETE FROM board_items WHERE id = ?").bind(row.id).run();
-  await boardChanged(env, hh, row.week);
+  await markWeekModified(env, hh, row.week);
   return json({ ok: true });
 });
 
-route("POST", "/api/items/:id/completions", async ({ env, hh, body, params }) => {
+route("POST", "/api/items/:id/completions", async ({ env, hh, body, params, waitUntil }) => {
   const row = await itemOf(env, hh, params[0]);
-  if (row.week === TEMPLATE) throw new HttpError(400, "Tick chores off on a real week, not the template");
-  const completion = { id: uid(), itemId: row.id, memberId: await ownMember(env, hh, body.memberId), doneAt: now() };
-  await env.DB.prepare("INSERT INTO completions (id, item_id, member_id, done_at) VALUES (?, ?, ?, ?)")
-    .bind(completion.id, completion.itemId, completion.memberId, completion.doneAt)
+  const lastDay = addDays(row.week, 6);
+  let day: string;
+  if (typeof body.day === "string") {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(body.day) || body.day < row.week || body.day > lastDay)
+      throw new HttpError(400, "That day isn't in this chore's week");
+    day = body.day;
+  } else {
+    // Ticking an "any time" chore counts for today, or the nearest day of that week.
+    const t = today(hh);
+    day = t < row.week ? row.week : t > lastDay ? lastDay : t;
+  }
+  const board = await loadBoard(env, hh, row.week);
+  const item = board.items.find((i) => i.id === row.id)!;
+  const waitingOn = blockingChore(item, item.kind === "days" ? day : null, board.items, board.completions);
+  if (waitingOn) {
+    const other = await env.DB.prepare("SELECT title FROM chores WHERE id = ?").bind(waitingOn).first<any>();
+    throw new HttpError(409, `Waiting for “${other?.title ?? "another chore"}” to be done first`);
+  }
+  const completion = { id: uid(), itemId: row.id, memberId: await ownMember(env, hh, body.memberId), doneAt: now(), day };
+  await env.DB.prepare("INSERT INTO completions (id, item_id, member_id, done_at, day) VALUES (?, ?, ?, ?, ?)")
+    .bind(completion.id, completion.itemId, completion.memberId, completion.doneAt, completion.day)
     .run();
-  await boardChanged(env, hh, row.week);
+  await markWeekModified(env, hh, row.week);
+  waitUntil(notifyUnblocked(env, hh, board, { ...completion }));
   return json(completion, 201);
 });
 
@@ -479,10 +777,10 @@ route("DELETE", "/api/completions/:id", async ({ env, hh, params }) => {
   return json({ ok: true });
 });
 
-// Throws away this week's plan (and its ticks) and re-copies the template.
+// Throws away a week's plan (and its ticks) and re-copies the active template.
 route("POST", "/api/board/:week/reset", async ({ env, hh, params }) => {
   const week = boardWeek(params[0]);
-  if (week === TEMPLATE || week < currentWeek(hh)) throw new HttpError(400, "Only this week or later can be reset");
+  if (week < currentWeek(hh)) throw new HttpError(400, "Only this week or later can be reset");
   await env.DB.batch([
     env.DB.prepare("DELETE FROM board_items WHERE household_id = ? AND week = ?").bind(hh.id, week),
     env.DB.prepare("DELETE FROM weeks WHERE household_id = ? AND week = ?").bind(hh.id, week),
@@ -491,21 +789,240 @@ route("POST", "/api/board/:week/reset", async ({ env, hh, params }) => {
   return json(await loadBoard(env, hh, week));
 });
 
-route("POST", "/api/board/:week/save-as-template", async ({ env, hh, params }) => {
+// Replaces a template's rules with this week's chores.
+route("POST", "/api/board/:week/save-to-template", async ({ env, hh, body, params }) => {
   const week = boardWeek(params[0]);
-  if (week === TEMPLATE) throw new HttpError(400, "That's already the template");
-  await ensureWeek(env, hh, TEMPLATE);
-  const { results } = await env.DB.prepare(
-    "SELECT bi.* FROM board_items bi JOIN chores c ON c.id = bi.chore_id WHERE bi.household_id = ? AND bi.week = ? AND c.archived = 0",
-  )
-    .bind(hh.id, week)
-    .all();
-  await env.DB.batch([
-    env.DB.prepare("DELETE FROM board_items WHERE household_id = ? AND week = 'template'").bind(hh.id),
-    ...cloneTemplateStatements(env, hh, TEMPLATE, results),
+  const template = await templateOf(env, hh, String(body.templateId ?? hh.active_template_id ?? ""));
+  const board = await loadBoard(env, hh, week);
+  // A template has one rule per chore; repeats of a chore merge their people.
+  const byChore = new Map<string, (typeof board.items)[number]>();
+  for (const item of board.items) {
+    const seen = byChore.get(item.choreId);
+    if (seen) seen.assigneeIds = [...new Set([...seen.assigneeIds, ...item.assigneeIds])];
+    else byChore.set(item.choreId, { ...item });
+  }
+  const statements = [env.DB.prepare("DELETE FROM template_rules WHERE template_id = ?").bind(template.id)];
+  for (const item of byChore.values()) {
+    const ruleId = uid();
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO template_rules (id, template_id, chore_id, kind, times_per_week, days, every_weeks, anchor_week, position, time, after_chore_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        ruleId,
+        template.id,
+        item.choreId,
+        item.kind,
+        item.timesPerWeek,
+        item.days,
+        item.everyWeeks,
+        week,
+        item.position,
+        item.time,
+        item.afterChoreId,
+      ),
+      ...item.assigneeIds.map((m) => env.DB.prepare("INSERT INTO rule_assignees (rule_id, member_id) VALUES (?, ?)").bind(ruleId, m)),
+    );
+  }
+  await env.DB.batch(statements);
+  await templateChanged(env, hh, template.id);
+  return json({ ok: true });
+});
+
+// Templates and their rules
+
+route("GET", "/api/templates", async ({ env, hh }) => {
+  const [templates, rules] = await env.DB.batch([
+    env.DB.prepare("SELECT * FROM templates WHERE household_id = ? ORDER BY created_at").bind(hh.id),
+    env.DB.prepare(
+      `SELECT ${RULE_COLUMNS} FROM template_rules r JOIN templates t ON t.id = r.template_id JOIN chores c ON c.id = r.chore_id
+       WHERE t.household_id = ? AND c.archived = 0 ORDER BY r.position`,
+    ).bind(hh.id),
   ]);
+  return json({
+    templates: templates.results.map((t: any) => ({
+      id: t.id,
+      name: t.name,
+      rules: (rules.results as any[]).filter((r) => r.template_id === t.id).map(mapRule),
+    })),
+    activeTemplateId: hh.active_template_id,
+  });
+});
+
+route("POST", "/api/templates", async ({ env, hh, body }) => {
+  const id = uid();
+  const name = str(body.name, "Template name", 60);
+  const statements = [
+    env.DB.prepare("INSERT INTO templates (id, household_id, name, created_at) VALUES (?, ?, ?, ?)").bind(id, hh.id, name, now()),
+  ];
+  if (body.copyFromId) {
+    const source = await templateOf(env, hh, String(body.copyFromId));
+    for (const r of await rulesOf(env, source.id)) {
+      const ruleId = uid();
+      statements.push(
+        env.DB.prepare(
+          `INSERT INTO template_rules (id, template_id, chore_id, kind, times_per_week, days, every_weeks, anchor_week, position, time, after_chore_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).bind(ruleId, id, r.chore_id, r.kind, r.times_per_week, r.days, r.every_weeks, r.anchor_week, r.position, r.time, r.after_chore_id),
+        ...splitIds(r.assignees).map((m) =>
+          env.DB.prepare("INSERT INTO rule_assignees (rule_id, member_id) VALUES (?, ?)").bind(ruleId, m),
+        ),
+      );
+    }
+  }
+  await env.DB.batch(statements);
+  return json({ id, name, rules: [] }, 201);
+});
+
+route("PATCH", "/api/templates/:id", async ({ env, hh, body, params }) => {
+  const t = await templateOf(env, hh, params[0]);
+  await env.DB.prepare("UPDATE templates SET name = ? WHERE id = ?").bind(str(body.name, "Template name", 60), t.id).run();
+  return json({ ok: true });
+});
+
+route("DELETE", "/api/templates/:id", async ({ env, hh, params }) => {
+  const t = await templateOf(env, hh, params[0]);
+  if (t.id === hh.active_template_id) throw new HttpError(400, "That's the template in use — switch to another one first");
+  await env.DB.prepare("DELETE FROM templates WHERE id = ?").bind(t.id).run();
+  return json({ ok: true });
+});
+
+// Switching applies from today: see switchCurrentWeek.
+route("POST", "/api/templates/:id/activate", async ({ env, hh, params }) => {
+  const t = await templateOf(env, hh, params[0]);
+  if (t.id === hh.active_template_id) return json({ ok: true });
+  // The current week must exist under the old template before it's split.
+  await ensureWeek(env, hh, currentWeek(hh));
+  await switchCurrentWeek(env, hh, t.id);
+  await env.DB.prepare("UPDATE households SET active_template_id = ? WHERE id = ?").bind(t.id, hh.id).run();
   await refreshUntouchedFutureWeeks(env, hh);
   return json({ ok: true });
+});
+
+route("POST", "/api/templates/:id/rules", async ({ env, hh, body, params }) => {
+  const t = await templateOf(env, hh, params[0]);
+  const chore = await env.DB.prepare("SELECT id FROM chores WHERE id = ? AND household_id = ? AND archived = 0")
+    .bind(body.choreId, hh.id)
+    .first<any>();
+  if (!chore) throw new HttpError(400, "Unknown chore");
+  const taken = await env.DB.prepare("SELECT 1 FROM template_rules WHERE template_id = ? AND chore_id = ?")
+    .bind(t.id, chore.id)
+    .first();
+  if (taken) throw new HttpError(409, "That chore is already in this template — edit it instead");
+  const schedule = readSchedule(body);
+  await checkAfter(env, hh, schedule, chore.id);
+  const anchorWeek = typeof body.anchorWeek === "string" && isWeekKey(body.anchorWeek) ? body.anchorWeek : currentWeek(hh);
+  const assigneeIds = await ownMembers(env, hh, body.assigneeIds);
+  const maxPos = await env.DB.prepare("SELECT COALESCE(MAX(position), 0) AS p FROM template_rules WHERE template_id = ?")
+    .bind(t.id)
+    .first<number>("p");
+  const id = uid();
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO template_rules (id, template_id, chore_id, kind, times_per_week, days, every_weeks, anchor_week, position, time, after_chore_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      id,
+      t.id,
+      chore.id,
+      schedule.kind,
+      schedule.timesPerWeek,
+      schedule.days,
+      schedule.everyWeeks,
+      anchorWeek,
+      (maxPos ?? 0) + 1,
+      schedule.time,
+      schedule.afterChoreId,
+    ),
+    ...assigneeIds.map((m) => env.DB.prepare("INSERT INTO rule_assignees (rule_id, member_id) VALUES (?, ?)").bind(id, m)),
+  ]);
+  await templateChanged(env, hh, t.id);
+  return json({ id, choreId: chore.id, assigneeIds, anchorWeek, position: (maxPos ?? 0) + 1, ...schedule }, 201);
+});
+
+route("PATCH", "/api/rules/:id", async ({ env, hh, body, params }) => {
+  const row = await ruleOf(env, hh, params[0]);
+  const schedule = readSchedule(body, mapSchedule(row));
+  await checkAfter(env, hh, schedule, row.chore_id);
+  const anchorWeek = typeof body.anchorWeek === "string" && isWeekKey(body.anchorWeek) ? body.anchorWeek : row.anchor_week;
+  const position = body.position !== undefined ? Number(body.position) : row.position;
+  if (!Number.isFinite(position)) throw new HttpError(400, "Bad position");
+  const statements = [
+    env.DB.prepare(
+      "UPDATE template_rules SET kind = ?, times_per_week = ?, days = ?, every_weeks = ?, anchor_week = ?, position = ?, time = ?, after_chore_id = ? WHERE id = ?",
+    ).bind(schedule.kind, schedule.timesPerWeek, schedule.days, schedule.everyWeeks, anchorWeek, position, schedule.time, schedule.afterChoreId, row.id),
+  ];
+  if ("assigneeIds" in body)
+    statements.push(...replaceAssignees(env, "rule_assignees", row.id, await ownMembers(env, hh, body.assigneeIds)));
+  await env.DB.batch(statements);
+  await templateChanged(env, hh, row.template_id);
+  return json({ ok: true });
+});
+
+route("DELETE", "/api/rules/:id", async ({ env, hh, params }) => {
+  const row = await ruleOf(env, hh, params[0]);
+  await env.DB.prepare("DELETE FROM template_rules WHERE id = ?").bind(row.id).run();
+  await templateChanged(env, hh, row.template_id);
+  return json({ ok: true });
+});
+
+// Calendar: what's on each day. Weeks that exist come from their copy; upcoming
+// weeks nobody has opened are previewed from the active template without creating them.
+
+route("GET", "/api/calendar", async ({ env, hh, url }) => {
+  const from = url.searchParams.get("from") ?? "";
+  const to = url.searchParams.get("to") ?? "";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || to < from || to > addDays(from, 62))
+    throw new HttpError(400, "Pick a range of up to two months");
+  const firstWeek = weekOf(from);
+  const lastWeek = weekOf(to);
+  const cw = currentWeek(hh);
+  const [weeks, items, completions] = await env.DB.batch([
+    env.DB.prepare("SELECT week FROM weeks WHERE household_id = ? AND week BETWEEN ? AND ?").bind(hh.id, firstWeek, lastWeek),
+    env.DB.prepare(`SELECT ${ITEM_COLUMNS} FROM board_items bi WHERE bi.household_id = ? AND bi.week BETWEEN ? AND ?`).bind(
+      hh.id,
+      firstWeek,
+      lastWeek,
+    ),
+    env.DB.prepare(
+      `SELECT c.item_id, c.day FROM completions c JOIN board_items bi ON bi.id = c.item_id
+       WHERE bi.household_id = ? AND bi.week BETWEEN ? AND ?`,
+    ).bind(hh.id, firstWeek, lastWeek),
+  ]);
+  const existing = new Set((weeks.results as any[]).map((w) => w.week));
+  const doneDays = new Map<string, Set<string>>();
+  for (const c of completions.results as any[]) {
+    if (!doneDays.has(c.item_id)) doneDays.set(c.item_id, new Set());
+    if (c.day) doneDays.get(c.item_id)!.add(c.day);
+  }
+  const rules = await rulesOf(env, hh.active_template_id);
+
+  const byDay = new Map<string, CalendarDay["entries"]>();
+  const add = (day: string, entry: CalendarDay["entries"][number]) => {
+    if (day < from || day > to) return;
+    if (!byDay.has(day)) byDay.set(day, []);
+    byDay.get(day)!.push(entry);
+  };
+  for (let week = firstWeek; week <= lastWeek; week = addDays(week, 7)) {
+    if (existing.has(week)) {
+      for (const item of (items.results as any[]).filter((i) => i.week === week)) {
+        const done = doneDays.get(item.id) ?? new Set<string>();
+        const assigneeIds = splitIds(item.assignees);
+        if (item.kind === "days")
+          for (const day of scheduledDays(item.days, week)) add(day, { choreId: item.chore_id, assigneeIds, done: done.has(day) });
+        // "Any time" chores show up on the days they were actually done.
+        else for (const day of done) add(day, { choreId: item.chore_id, assigneeIds, done: true });
+      }
+    } else if (week >= cw) {
+      for (const r of rules)
+        if (r.kind === "days" && appliesToWeek(r.every_weeks, r.anchor_week, week))
+          for (const day of scheduledDays(r.days, week))
+            add(day, { choreId: r.chore_id, assigneeIds: splitIds(r.assignees), done: false });
+    }
+  }
+  const days: CalendarDay[] = [];
+  for (let day = from; day <= to; day = addDays(day, 1)) days.push({ day, entries: byDay.get(day) ?? [] });
+  return json(days);
 });
 
 // Stats
@@ -516,26 +1033,32 @@ route("GET", "/api/stats", async ({ env, hh, url }) => {
   const first = addDays(last, -7 * (count - 1));
   const [items, completions] = await env.DB.batch([
     env.DB.prepare(
-      `SELECT bi.week, bi.member_id, bi.times_per_week, c.minutes, c.per FROM board_items bi
-       JOIN chores c ON c.id = bi.chore_id
-       WHERE bi.household_id = ? AND bi.week != 'template' AND bi.week BETWEEN ? AND ?`,
+      `SELECT ${ITEM_COLUMNS}, c.minutes, c.per FROM board_items bi JOIN chores c ON c.id = bi.chore_id
+       WHERE bi.household_id = ? AND bi.week BETWEEN ? AND ?`,
     ).bind(hh.id, first, last),
     env.DB.prepare(
-      `SELECT bi.week, co.member_id, bi.times_per_week, c.minutes, c.per FROM completions co
-       JOIN board_items bi ON bi.id = co.item_id JOIN chores c ON c.id = bi.chore_id
-       WHERE bi.household_id = ? AND bi.week != 'template' AND bi.week BETWEEN ? AND ?`,
+      `SELECT co.member_id AS ticker, bi.week, bi.kind, bi.times_per_week, bi.days, bi.every_weeks, c.minutes, c.per,
+         (SELECT group_concat(member_id) FROM item_assignees a WHERE a.item_id = bi.id) AS assignees
+       FROM completions co JOIN board_items bi ON bi.id = co.item_id JOIN chores c ON c.id = bi.chore_id
+       WHERE bi.household_id = ? AND bi.week BETWEEN ? AND ?`,
     ).bind(hh.id, first, last),
   ]);
   const weeks: WeekStats[] = [];
   for (let w = first; w <= last; w = addDays(w, 7)) weeks.push({ week: w, planned: {}, done: {} });
   const byWeek = new Map(weeks.map((w) => [w.week, w]));
-  const add = (bucket: Record<string, number>, key: string | null, mins: number) => {
-    bucket[key ?? ""] = (bucket[key ?? ""] ?? 0) + mins;
+  const add = (bucket: Record<string, number>, key: string, mins: number) => {
+    bucket[key] = (bucket[key] ?? 0) + mins;
   };
-  for (const r of items.results as any[])
-    add(byWeek.get(r.week)!.planned, r.member_id, weeklyMinutes(r.minutes, r.per, r.times_per_week));
-  for (const r of completions.results as any[])
-    add(byWeek.get(r.week)!.done, r.member_id, minutesPerCompletion(r.minutes, r.per, r.times_per_week));
+  for (const r of items.results as any[]) {
+    const mins = weeklyMinutes(r.minutes, r.per, goesPerWeek(mapSchedule(r)), r.every_weeks);
+    const assignees = splitIds(r.assignees);
+    // Shared chores are done together, so each person spends the full time.
+    for (const m of assignees.length ? assignees : [""]) add(byWeek.get(r.week)!.planned, m, mins);
+  }
+  for (const r of completions.results as any[]) {
+    const mins = minutesPerCompletion(r.minutes, r.per, goesPerWeek(mapSchedule(r)), r.every_weeks);
+    for (const m of creditedMembers(r.ticker, splitIds(r.assignees))) add(byWeek.get(r.week)!.done, m, mins);
+  }
   return json(weeks);
 });
 
@@ -691,7 +1214,7 @@ async function createHousehold(env: Env, body: any): Promise<Response> {
   const member = {
     id: uid(),
     name: str(body.member?.name, "Your name", 40),
-    emoji: str(body.member?.emoji ?? "🐻", "Emoji", 16),
+    ...readBuddy(body.member?.buddy),
     color: str(body.member?.color ?? "pumpkin", "Colour", 20),
     position: 0,
   };
@@ -709,8 +1232,15 @@ async function createHousehold(env: Env, body: any): Promise<Response> {
       now(),
     ),
     env.DB.prepare(
-      "INSERT INTO members (id, household_id, name, emoji, color, position, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)",
-    ).bind(member.id, id, member.name, member.emoji, member.color, now()),
+      "INSERT INTO members (id, household_id, name, emoji, buddy, color, position, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)",
+    ).bind(member.id, id, member.name, member.emoji, member.buddy, member.color, now()),
+    env.DB.prepare("INSERT INTO templates (id, household_id, name, created_at) VALUES (?, ?, ?, ?)").bind(
+      `tpl-${id}`,
+      id,
+      "Our usual week",
+      now(),
+    ),
+    env.DB.prepare("UPDATE households SET active_template_id = ? WHERE id = ?").bind(`tpl-${id}`, id),
   ]);
   return json({ token: `${id}.${secret}`, memberId: member.id }, 201);
 }
@@ -766,8 +1296,75 @@ async function handleApi(req: Request, env: Env, ctx: ExecutionContext): Promise
 
 // ---- scheduled: reminders and day-ahead notes ------------------------------
 
+/** Records a notification as sent; false if it already was. */
+async function sendOnce(env: Env, key: string): Promise<boolean> {
+  const res = await env.DB.prepare("INSERT OR IGNORE INTO notification_log (key, created_at) VALUES (?, ?)").bind(key, now()).run();
+  return res.meta.changes === 1;
+}
+
+const MORNING_HOUR = 8;
+
+/**
+ * Chore nudges: a push at a chore's time (if it has one and isn't done yet),
+ * and an 8am round-up of each person's set-day chores that have no time.
+ */
+async function choreNotifications(env: Env, t: number) {
+  const { results: households } = await env.DB.prepare("SELECT * FROM households").all<HouseholdRow>();
+  for (const hh of households) {
+    const local = localParts(t, hh.timezone);
+    const todayKey = dayKey(t, hh.timezone);
+    const nowMinutes = local.hour * 60 + local.minute;
+    const week = weekOf(todayKey);
+    if (!(await ensureWeek(env, hh, week))) continue;
+    const board = await loadBoard(env, hh, week);
+    const todays = board.items.filter((i) => i.kind === "days" && scheduledDays(i.days, week).includes(todayKey));
+    if (!todays.length) continue;
+    const chores = new Map(
+      ((await env.DB.prepare("SELECT id, title, emoji FROM chores WHERE household_id = ?").bind(hh.id).all<any>()).results).map(
+        (c) => [c.id, c],
+      ),
+    );
+    const doneToday = (itemId: string) => board.completions.some((c) => c.itemId === itemId && c.day === todayKey);
+
+    for (const item of todays) {
+      if (!item.time || doneToday(item.id)) continue;
+      const [h, m] = item.time.split(":").map(Number);
+      const due = h * 60 + m;
+      // Due now, or in the last couple of hours if the scheduler missed it; never older.
+      if (nowMinutes < due || nowMinutes - due > 120) continue;
+      if (!(await sendOnce(env, `time:${item.id}:${todayKey}`))) continue;
+      const chore = chores.get(item.choreId);
+      const message = {
+        title: `⏰ ${chore?.emoji ?? ""} ${chore?.title ?? "Chore"} — ${formatTime(item.time)}`,
+        body: "It's time! Tick it off once it's done 💛",
+        url: "/?tab=chores",
+        tag: `time-${item.id}-${todayKey}`,
+      };
+      if (item.assigneeIds.length) for (const id of item.assigneeIds) await notify(env, hh.id, id, message);
+      else await notify(env, hh.id, null, message);
+    }
+
+    if (local.hour < MORNING_HOUR || local.hour >= 12) continue;
+    const { results: members } = await env.DB.prepare("SELECT id FROM members WHERE household_id = ?").bind(hh.id).all<any>();
+    for (const member of members) {
+      const mine = todays.filter((i) => !i.time && !doneToday(i.id) && i.assigneeIds.includes(member.id));
+      if (!mine.length || !(await sendOnce(env, `morning:${member.id}:${todayKey}`))) continue;
+      const names = mine.map((i) => `${chores.get(i.choreId)?.emoji ?? ""} ${chores.get(i.choreId)?.title ?? ""}`.trim());
+      await notify(env, hh.id, member.id, {
+        title: "☀️ Today's chores",
+        body: names.join(", "),
+        url: "/?tab=chores",
+        tag: `morning-${todayKey}`,
+      });
+    }
+  }
+  // Keep the log small: nothing older than a fortnight is ever checked again.
+  await env.DB.prepare("DELETE FROM notification_log WHERE created_at < ?").bind(t - 14 * 86400000).run();
+}
+
 async function runSchedule(env: Env) {
   const t = now();
+  await choreNotifications(env, t).catch((e) => console.error("chore notifications failed", e));
   const due = await env.DB.prepare(
     `SELECT r.*, h.timezone FROM reminders r JOIN households h ON h.id = r.household_id
      WHERE r.active = 1 AND r.due_at <= ? LIMIT 100`,

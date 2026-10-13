@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { HomeData, Member } from "../shared/core";
 import { api, session } from "./api";
 import { type PushState, disablePush, enablePush, isStandalone, pushState, relinkPush } from "./push";
-import { AVATARS, Avatar, ColorChoices, EmojiChoices, Sheet, attempt, toast } from "./ui";
+import { Avatar, BuddyChoices, ColorChoices, Sheet, attempt, toast } from "./ui";
 
 interface Props {
   home: HomeData;
@@ -215,11 +215,11 @@ function MemberSheet({
   isMe: boolean;
 }) {
   const [name, setName] = useState(member?.name ?? "");
-  const [emoji, setEmoji] = useState(member?.emoji ?? "🐰");
+  const [buddy, setBuddy] = useState(member?.buddy ?? "bunny");
   const [color, setColor] = useState(member?.color ?? "mint");
   const save = async () => {
     const ok = await attempt(() =>
-      member ? api("PATCH", `/api/members/${member.id}`, { name, emoji, color }) : api("POST", "/api/members", { name, emoji, color }),
+      member ? api("PATCH", `/api/members/${member.id}`, { name, buddy, color }) : api("POST", "/api/members", { name, buddy, color }),
     );
     if (ok) {
       onSaved();
@@ -235,7 +235,7 @@ function MemberSheet({
         </label>
         <div className="field">
           <span>Buddy</span>
-          <EmojiChoices options={AVATARS} value={emoji} onChange={setEmoji} label="Avatar" />
+          <BuddyChoices value={buddy} onChange={setBuddy} />
         </div>
         <div className="field">
           <span>Colour</span>
