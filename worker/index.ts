@@ -300,22 +300,19 @@ async function ensureWeek(env: Env, hh: HouseholdRow, week: string): Promise<boo
 }
 
 /**
- * Called after the active template changes: upcoming weeks nobody has touched
- * yet are dropped so they re-copy the template when next opened.
+ * Keeps the board in step with the template in use: after a change, every
+ * planned week from this one on follows it (for the given chores, or all).
  */
-async function refreshUntouchedFutureWeeks(env: Env, hh: HouseholdRow) {
-  const cw = currentWeek(hh);
-  await env.DB.batch([
-    env.DB.prepare(
-      `DELETE FROM board_items WHERE household_id = ?1 AND week IN
-         (SELECT week FROM weeks WHERE household_id = ?1 AND week > ?2 AND modified = 0)`,
-    ).bind(hh.id, cw),
-    env.DB.prepare("DELETE FROM weeks WHERE household_id = ? AND week > ? AND modified = 0").bind(hh.id, cw),
-  ]);
+async function templateChanged(env: Env, hh: HouseholdRow, templateId: string, choreIds?: string[]) {
+  if (templateId !== hh.active_template_id) return;
+  await syncPlannedWeeks(env, hh, await rulesOf(env, templateId), choreIds ? new Set(choreIds) : undefined);
 }
 
-async function templateChanged(env: Env, hh: HouseholdRow, templateId: string) {
-  if (templateId === hh.active_template_id) await refreshUntouchedFutureWeeks(env, hh);
+async function syncPlannedWeeks(env: Env, hh: HouseholdRow, rules: any[], onlyChores?: Set<string>) {
+  const { results } = await env.DB.prepare("SELECT week FROM weeks WHERE household_id = ? AND week >= ? ORDER BY week")
+    .bind(hh.id, currentWeek(hh))
+    .all<{ week: string }>();
+  for (const { week } of results) await syncWeekToRules(env, hh, week, rules, onlyChores);
 }
 
 async function markWeekModified(env: Env, hh: HouseholdRow, week: string) {
@@ -379,14 +376,14 @@ async function ruleOf(env: Env, hh: HouseholdRow, id: string) {
 }
 
 /**
- * Switching templates midweek: this week keeps the old plan for the days
- * already gone (and anything already ticked), and takes the new template's
- * chores from today on.
+ * Brings one planned week in line with a set of template rules, from today on.
+ * What has already happened stays: this week's days that have passed, and any
+ * go already ticked. Everything else for the chores in scope follows the rules,
+ * including who's on them. Other chores (and any one-off tweaks to them) are
+ * left alone when `onlyChores` is given.
  */
-async function switchCurrentWeek(env: Env, hh: HouseholdRow, newTemplateId: string) {
-  const week = currentWeek(hh);
-  if (!(await ensureWeek(env, hh, week))) return;
-  const before = (1 << weekdayIndex(today(hh))) - 1; // bitmask of days before today
+async function syncWeekToRules(env: Env, hh: HouseholdRow, week: string, rules: any[], onlyChores?: Set<string>) {
+  const before = week === currentWeek(hh) ? (1 << weekdayIndex(today(hh))) - 1 : 0; // days already gone
   const board = await loadBoard(env, hh, week);
   const doneByItem = new Map<string, { count: number; days: number }>();
   for (const c of board.completions) {
@@ -395,64 +392,67 @@ async function switchCurrentWeek(env: Env, hh: HouseholdRow, newTemplateId: stri
     if (c.day) d.days |= 1 << weekdayIndex(c.day);
     doneByItem.set(c.itemId, d);
   }
-
-  const statements: D1PreparedStatement[] = [];
-  const kept = new Map<string, any>(); // chore id -> surviving item
-  for (const item of board.items) {
-    const done = doneByItem.get(item.id) ?? { count: 0, days: 0 };
-    if (item.kind === "days") {
-      const days = item.days & (before | done.days);
-      if (!days) statements.push(env.DB.prepare("DELETE FROM board_items WHERE id = ?").bind(item.id));
-      else {
-        statements.push(
-          env.DB.prepare("UPDATE board_items SET days = ?, times_per_week = ? WHERE id = ?").bind(
-            days,
-            goesPerWeek({ kind: "days", days, timesPerWeek: 0 }),
-            item.id,
-          ),
-        );
-        kept.set(item.choreId, { ...item, days });
-      }
-    } else if (!done.count) statements.push(env.DB.prepare("DELETE FROM board_items WHERE id = ?").bind(item.id));
-    else {
-      // Whatever was managed so far counts as this chore's week under the old plan.
-      statements.push(env.DB.prepare("UPDATE board_items SET times_per_week = ? WHERE id = ?").bind(done.count, item.id));
-      kept.set(item.choreId, { ...item, timesPerWeek: done.count });
-    }
-  }
-
-  const rules = (await rulesOf(env, newTemplateId)).filter((r) => appliesToWeek(r.every_weeks, r.anchor_week, week));
-  for (const r of rules) {
-    const schedule = mapSchedule(r);
-    if (schedule.kind === "days") schedule.days &= ~before;
-    if (schedule.kind === "days" && !schedule.days) continue;
-    schedule.timesPerWeek = goesPerWeek(schedule) || schedule.timesPerWeek;
-    const existing = kept.get(r.chore_id);
-    if (existing && existing.kind === schedule.kind) {
-      // Same chore under both plans: carry on with one card.
-      const days = existing.days | schedule.days;
-      const times =
-        schedule.kind === "days" ? goesPerWeek({ kind: "days", days, timesPerWeek: 0 }) : Math.max(existing.timesPerWeek, schedule.timesPerWeek);
-      statements.push(
-        env.DB.prepare(
-          "UPDATE board_items SET days = ?, times_per_week = ?, every_weeks = ?, time = ?, after_chore_id = ? WHERE id = ?",
-        ).bind(days, times, schedule.everyWeeks, schedule.time, schedule.afterChoreId, existing.id),
-        ...replaceAssignees(env, "item_assignees", existing.id, splitIds(r.assignees)),
-      );
-    } else {
-      statements.push(
-        ...insertItem(env, hh, week, { choreId: r.chore_id, position: r.position, ...schedule }, splitIds(r.assignees)).statements,
-      );
-    }
-  }
-  statements.push(
-    env.DB.prepare("UPDATE weeks SET modified = 1, template_id = ? WHERE household_id = ? AND week = ?").bind(
-      newTemplateId,
-      hh.id,
-      week,
-    ),
+  const ruleByChore = new Map(
+    rules.filter((r) => appliesToWeek(r.every_weeks, r.anchor_week, week)).map((r) => [r.chore_id as string, r]),
   );
-  await env.DB.batch(statements);
+  const inScope = (choreId: string) => !onlyChores || onlyChores.has(choreId);
+  const countDays = (days: number) => goesPerWeek({ kind: "days", days, timesPerWeek: 0 });
+  const statements: D1PreparedStatement[] = [];
+  const del = (id: string) => statements.push(env.DB.prepare("DELETE FROM board_items WHERE id = ?").bind(id));
+  const handled = new Set<string>();
+
+  for (const item of board.items) {
+    if (!inScope(item.choreId)) continue;
+    const done = doneByItem.get(item.id) ?? { count: 0, days: 0 };
+    const keptDays = item.kind === "days" ? item.days & (before | done.days) : 0;
+    // One card per chore: a second card for the same chore is treated as having no rule.
+    const rule = handled.has(item.choreId) ? undefined : ruleByChore.get(item.choreId);
+
+    if (!rule) {
+      // Not in the template (for this week): keep only what's already happened.
+      if (item.kind === "days" && keptDays)
+        statements.push(
+          env.DB.prepare("UPDATE board_items SET days = ?, times_per_week = ? WHERE id = ?").bind(keptDays, countDays(keptDays), item.id),
+        );
+      else if (item.kind === "anytime" && done.count)
+        statements.push(env.DB.prepare("UPDATE board_items SET times_per_week = ? WHERE id = ?").bind(done.count, item.id));
+      else del(item.id);
+      continue;
+    }
+
+    handled.add(item.choreId);
+    const s = mapSchedule(rule);
+    let days = 0;
+    let times: number;
+    if (s.kind === "days") {
+      days = keptDays | (s.days & ~before);
+      times = countDays(days);
+      if (!days) {
+        if (done.count) continue; // ticked but nothing left to plan: leave the card as it was
+        del(item.id);
+        continue;
+      }
+    } else times = Math.max(s.timesPerWeek, done.count);
+    statements.push(
+      env.DB.prepare(
+        "UPDATE board_items SET kind = ?, days = ?, times_per_week = ?, every_weeks = ?, time = ?, after_chore_id = ? WHERE id = ?",
+      ).bind(s.kind, days, times, s.everyWeeks, s.time, s.afterChoreId, item.id),
+      ...replaceAssignees(env, "item_assignees", item.id, splitIds(rule.assignees)),
+    );
+  }
+
+  // Chores in the template that this week doesn't have yet.
+  for (const [choreId, rule] of ruleByChore) {
+    if (!inScope(choreId) || handled.has(choreId)) continue;
+    const s = mapSchedule(rule);
+    if (s.kind === "days") {
+      s.days &= ~before;
+      if (!s.days) continue;
+      s.timesPerWeek = countDays(s.days);
+    }
+    statements.push(...insertItem(env, hh, week, { choreId, position: rule.position, ...s }, splitIds(rule.assignees)).statements);
+  }
+  if (statements.length) await env.DB.batch(statements);
 }
 
 // ---- push -------------------------------------------------------------------
@@ -887,15 +887,17 @@ route("DELETE", "/api/templates/:id", async ({ env, hh, params }) => {
   return json({ ok: true });
 });
 
-// Switching applies from today: see switchCurrentWeek.
+// Switching applies from today: planned weeks follow the new template from here on.
 route("POST", "/api/templates/:id/activate", async ({ env, hh, params }) => {
   const t = await templateOf(env, hh, params[0]);
   if (t.id === hh.active_template_id) return json({ ok: true });
-  // The current week must exist under the old template before it's split.
+  // This week must exist under the old template first, so the days already gone keep it.
   await ensureWeek(env, hh, currentWeek(hh));
-  await switchCurrentWeek(env, hh, t.id);
-  await env.DB.prepare("UPDATE households SET active_template_id = ? WHERE id = ?").bind(t.id, hh.id).run();
-  await refreshUntouchedFutureWeeks(env, hh);
+  await syncPlannedWeeks(env, hh, await rulesOf(env, t.id));
+  await env.DB.batch([
+    env.DB.prepare("UPDATE households SET active_template_id = ? WHERE id = ?").bind(t.id, hh.id),
+    env.DB.prepare("UPDATE weeks SET template_id = ? WHERE household_id = ? AND week >= ?").bind(t.id, hh.id, currentWeek(hh)),
+  ]);
   return json({ ok: true });
 });
 
@@ -936,7 +938,7 @@ route("POST", "/api/templates/:id/rules", async ({ env, hh, body, params }) => {
     ),
     ...assigneeIds.map((m) => env.DB.prepare("INSERT INTO rule_assignees (rule_id, member_id) VALUES (?, ?)").bind(id, m)),
   ]);
-  await templateChanged(env, hh, t.id);
+  await templateChanged(env, hh, t.id, [chore.id]);
   return json({ id, choreId: chore.id, assigneeIds, anchorWeek, position: (maxPos ?? 0) + 1, ...schedule }, 201);
 });
 
@@ -955,14 +957,14 @@ route("PATCH", "/api/rules/:id", async ({ env, hh, body, params }) => {
   if ("assigneeIds" in body)
     statements.push(...replaceAssignees(env, "rule_assignees", row.id, await ownMembers(env, hh, body.assigneeIds)));
   await env.DB.batch(statements);
-  await templateChanged(env, hh, row.template_id);
+  await templateChanged(env, hh, row.template_id, [row.chore_id]);
   return json({ ok: true });
 });
 
 route("DELETE", "/api/rules/:id", async ({ env, hh, params }) => {
   const row = await ruleOf(env, hh, params[0]);
   await env.DB.prepare("DELETE FROM template_rules WHERE id = ?").bind(row.id).run();
-  await templateChanged(env, hh, row.template_id);
+  await templateChanged(env, hh, row.template_id, [row.chore_id]);
   return json({ ok: true });
 });
 
