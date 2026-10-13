@@ -143,6 +143,7 @@ const mapRule = (r: any) => ({
   choreId: r.chore_id,
   assigneeIds: splitIds(r.assignees),
   anchorWeek: r.anchor_week,
+  startDay: r.start_day ?? null,
   position: r.position,
   ...mapSchedule(r),
 });
@@ -222,6 +223,15 @@ function readSchedule(body: any, fallback?: Schedule): Schedule {
   return { kind, timesPerWeek, days, everyWeeks, time, afterChoreId };
 }
 
+/** Optional first day for a template chore ("YYYY-MM-DD"); null clears it. */
+function readStartDay(body: any, fallback: string | null): string | null {
+  if (!("startDay" in body)) return fallback;
+  if (body.startDay === null || body.startDay === "") return null;
+  if (typeof body.startDay !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(body.startDay))
+    throw new HttpError(400, "Start date must look like 2026-10-31");
+  return body.startDay;
+}
+
 /** Checks an "only after" constraint points at another of this household's chores. */
 async function checkAfter(env: Env, hh: HouseholdRow, schedule: Schedule, choreId: string) {
   if (!schedule.afterChoreId) return;
@@ -284,6 +294,26 @@ async function rulesOf(env: Env, templateId: string | null): Promise<any[]> {
   return results;
 }
 
+/**
+ * What a template rule asks for in a given week, or null if it doesn't happen
+ * that week: off-weeks of an every-N-weeks rule, weeks before its start date,
+ * and (in its first week) days before it starts.
+ */
+function ruleScheduleForWeek(r: any, week: string): Schedule | null {
+  if (!appliesToWeek(r.every_weeks, r.anchor_week, week)) return null;
+  const s = mapSchedule(r);
+  if (r.start_day) {
+    const startWeek = weekOf(r.start_day);
+    if (week < startWeek) return null;
+    if (week === startWeek && s.kind === "days") {
+      s.days &= ~((1 << weekdayIndex(r.start_day)) - 1);
+      if (!s.days) return null;
+      s.timesPerWeek = goesPerWeek(s);
+    }
+  }
+  return s;
+}
+
 /** Makes sure a week exists, copying the active template into it. Returns false for an unplanned past week. */
 async function ensureWeek(env: Env, hh: HouseholdRow, week: string): Promise<boolean> {
   const existing = await env.DB.prepare("SELECT 1 FROM weeks WHERE household_id = ? AND week = ?")
@@ -298,10 +328,10 @@ async function ensureWeek(env: Env, hh: HouseholdRow, week: string): Promise<boo
     .run();
   // Another request may have copied this week at the same moment.
   if (res.meta.changes === 0) return true;
-  const rules = (await rulesOf(env, hh.active_template_id)).filter((r) => appliesToWeek(r.every_weeks, r.anchor_week, week));
-  const statements = rules.flatMap(
-    (r) => insertItem(env, hh, week, { choreId: r.chore_id, position: r.position, ...mapSchedule(r) }, splitIds(r.assignees)).statements,
-  );
+  const statements = (await rulesOf(env, hh.active_template_id)).flatMap((r) => {
+    const s = ruleScheduleForWeek(r, week);
+    return s ? insertItem(env, hh, week, { choreId: r.chore_id, position: r.position, ...s }, splitIds(r.assignees)).statements : [];
+  });
   if (statements.length) await env.DB.batch(statements);
   return true;
 }
@@ -399,9 +429,11 @@ async function syncWeekToRules(env: Env, hh: HouseholdRow, week: string, rules: 
     if (c.day) d.days |= 1 << weekdayIndex(c.day);
     doneByItem.set(c.itemId, d);
   }
-  const ruleByChore = new Map(
-    rules.filter((r) => appliesToWeek(r.every_weeks, r.anchor_week, week)).map((r) => [r.chore_id as string, r]),
-  );
+  const ruleByChore = new Map<string, any>();
+  for (const r of rules) {
+    const schedule = ruleScheduleForWeek(r, week);
+    if (schedule) ruleByChore.set(r.chore_id, { ...r, schedule });
+  }
   const inScope = (choreId: string) => !onlyChores || onlyChores.has(choreId);
   const countDays = (days: number) => goesPerWeek({ kind: "days", days, timesPerWeek: 0 });
   const statements: D1PreparedStatement[] = [];
@@ -428,7 +460,7 @@ async function syncWeekToRules(env: Env, hh: HouseholdRow, week: string, rules: 
     }
 
     handled.add(item.choreId);
-    const s = mapSchedule(rule);
+    const s: Schedule = { ...rule.schedule };
     let days = 0;
     let times: number;
     if (s.kind === "days") {
@@ -451,7 +483,7 @@ async function syncWeekToRules(env: Env, hh: HouseholdRow, week: string, rules: 
   // Chores in the template that this week doesn't have yet.
   for (const [choreId, rule] of ruleByChore) {
     if (!inScope(choreId) || handled.has(choreId)) continue;
-    const s = mapSchedule(rule);
+    const s: Schedule = { ...rule.schedule };
     if (s.kind === "days") {
       s.days &= ~before;
       if (!s.days) continue;
@@ -868,9 +900,9 @@ route("POST", "/api/templates", async ({ env, hh, body }) => {
       const ruleId = uid();
       statements.push(
         env.DB.prepare(
-          `INSERT INTO template_rules (id, template_id, chore_id, kind, times_per_week, days, every_weeks, anchor_week, position, time, after_chore_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        ).bind(ruleId, id, r.chore_id, r.kind, r.times_per_week, r.days, r.every_weeks, r.anchor_week, r.position, r.time, r.after_chore_id),
+          `INSERT INTO template_rules (id, template_id, chore_id, kind, times_per_week, days, every_weeks, anchor_week, position, time, after_chore_id, start_day)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).bind(ruleId, id, r.chore_id, r.kind, r.times_per_week, r.days, r.every_weeks, r.anchor_week, r.position, r.time, r.after_chore_id, r.start_day ?? null),
         ...splitIds(r.assignees).map((m) =>
           env.DB.prepare("INSERT INTO rule_assignees (rule_id, member_id) VALUES (?, ?)").bind(ruleId, m),
         ),
@@ -920,7 +952,10 @@ route("POST", "/api/templates/:id/rules", async ({ env, hh, body, params }) => {
   if (taken) throw new HttpError(409, "That chore is already in this template — edit it instead");
   const schedule = readSchedule(body);
   await checkAfter(env, hh, schedule, chore.id);
-  const anchorWeek = typeof body.anchorWeek === "string" && isWeekKey(body.anchorWeek) ? body.anchorWeek : currentWeek(hh);
+  const startDay = readStartDay(body, null);
+  // Every-N-weeks counts from the week it starts in.
+  const anchorWeek =
+    typeof body.anchorWeek === "string" && isWeekKey(body.anchorWeek) ? body.anchorWeek : startDay ? weekOf(startDay) : currentWeek(hh);
   const assigneeIds = await someMembers(env, hh, body.assigneeIds);
   const maxPos = await env.DB.prepare("SELECT COALESCE(MAX(position), 0) AS p FROM template_rules WHERE template_id = ?")
     .bind(t.id)
@@ -928,8 +963,8 @@ route("POST", "/api/templates/:id/rules", async ({ env, hh, body, params }) => {
   const id = uid();
   await env.DB.batch([
     env.DB.prepare(
-      `INSERT INTO template_rules (id, template_id, chore_id, kind, times_per_week, days, every_weeks, anchor_week, position, time, after_chore_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO template_rules (id, template_id, chore_id, kind, times_per_week, days, every_weeks, anchor_week, position, time, after_chore_id, start_day)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       id,
       t.id,
@@ -942,24 +977,42 @@ route("POST", "/api/templates/:id/rules", async ({ env, hh, body, params }) => {
       (maxPos ?? 0) + 1,
       schedule.time,
       schedule.afterChoreId,
+      startDay,
     ),
     ...assigneeIds.map((m) => env.DB.prepare("INSERT INTO rule_assignees (rule_id, member_id) VALUES (?, ?)").bind(id, m)),
   ]);
   await templateChanged(env, hh, t.id, [chore.id]);
-  return json({ id, choreId: chore.id, assigneeIds, anchorWeek, position: (maxPos ?? 0) + 1, ...schedule }, 201);
+  return json({ id, choreId: chore.id, assigneeIds, anchorWeek, startDay, position: (maxPos ?? 0) + 1, ...schedule }, 201);
 });
 
 route("PATCH", "/api/rules/:id", async ({ env, hh, body, params }) => {
   const row = await ruleOf(env, hh, params[0]);
   const schedule = readSchedule(body, mapSchedule(row));
   await checkAfter(env, hh, schedule, row.chore_id);
-  const anchorWeek = typeof body.anchorWeek === "string" && isWeekKey(body.anchorWeek) ? body.anchorWeek : row.anchor_week;
+  const startDay = readStartDay(body, row.start_day ?? null);
+  const anchorWeek =
+    typeof body.anchorWeek === "string" && isWeekKey(body.anchorWeek)
+      ? body.anchorWeek
+      : "startDay" in body && startDay
+        ? weekOf(startDay)
+        : row.anchor_week;
   const position = body.position !== undefined ? Number(body.position) : row.position;
   if (!Number.isFinite(position)) throw new HttpError(400, "Bad position");
   const statements = [
     env.DB.prepare(
-      "UPDATE template_rules SET kind = ?, times_per_week = ?, days = ?, every_weeks = ?, anchor_week = ?, position = ?, time = ?, after_chore_id = ? WHERE id = ?",
-    ).bind(schedule.kind, schedule.timesPerWeek, schedule.days, schedule.everyWeeks, anchorWeek, position, schedule.time, schedule.afterChoreId, row.id),
+      "UPDATE template_rules SET kind = ?, times_per_week = ?, days = ?, every_weeks = ?, anchor_week = ?, position = ?, time = ?, after_chore_id = ?, start_day = ? WHERE id = ?",
+    ).bind(
+      schedule.kind,
+      schedule.timesPerWeek,
+      schedule.days,
+      schedule.everyWeeks,
+      anchorWeek,
+      position,
+      schedule.time,
+      schedule.afterChoreId,
+      startDay,
+      row.id,
+    ),
   ];
   if ("assigneeIds" in body)
     statements.push(...replaceAssignees(env, "rule_assignees", row.id, await someMembers(env, hh, body.assigneeIds)));
@@ -1023,10 +1076,11 @@ route("GET", "/api/calendar", async ({ env, hh, url }) => {
         else for (const day of done) add(day, { choreId: item.chore_id, assigneeIds, done: true });
       }
     } else if (week >= cw) {
-      for (const r of rules)
-        if (r.kind === "days" && appliesToWeek(r.every_weeks, r.anchor_week, week))
-          for (const day of scheduledDays(r.days, week))
-            add(day, { choreId: r.chore_id, assigneeIds: splitIds(r.assignees), done: false });
+      for (const r of rules) {
+        const s = ruleScheduleForWeek(r, week);
+        if (s?.kind === "days")
+          for (const day of scheduledDays(s.days, week)) add(day, { choreId: r.chore_id, assigneeIds: splitIds(r.assignees), done: false });
+      }
     }
   }
   const days: CalendarDay[] = [];

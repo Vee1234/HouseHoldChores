@@ -2381,3 +2381,8 @@ code.version {
 .picked-day .status-chip {
   margin-left: 0;
 }
+
+input.narrow-date {
+  width: 170px;
+  flex: none;
+}
