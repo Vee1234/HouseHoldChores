@@ -2390,19 +2390,38 @@ input.narrow-date {
 
 /* ---- home: floating Add New Chore ---- */
 
-.floating-add {
+/* Fills from the bottom of the screen up to just above the button, behind the
+   tab bar too, in the page's own background (dots and all). */
+.floating-add-bar {
   position: fixed;
-  left: 50%;
-  transform: translateX(-50%);
-  bottom: calc(env(safe-area-inset-bottom) + 94px);
-  width: min(560px, calc(100% - 32px));
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 10px 16px calc(env(safe-area-inset-bottom) + 94px);
+  display: flex;
+  justify-content: center;
+  z-index: 19;
+  background-color: var(--bg);
+  background-image: radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--line) 70%, transparent) 1px, transparent 0);
+  background-size: 22px 22px;
+  background-attachment: fixed;
+}
+/* A soft fade at the top edge instead of a hard line. */
+.floating-add-bar::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  height: 18px;
+  background: linear-gradient(to bottom, transparent, var(--bg));
+  pointer-events: none;
+}
+.floating-add {
+  width: min(560px, 100%);
   padding: 13px 18px;
   font-size: 1.05rem;
-  z-index: 19;
   box-shadow: 0 4px 0 var(--accent-deep), 0 10px 24px rgb(120 60 30 / 0.25);
-}
-.floating-add:active:not(:disabled) {
-  transform: translateX(-50%) translateY(2px);
 }
 /* Room at the bottom so the button never hides the last card. */
 .home-page {
