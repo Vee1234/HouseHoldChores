@@ -18,6 +18,11 @@ async function latestScript(): Promise<string | null> {
   return (await res.text()).match(SCRIPT_PATTERN)?.[0] ?? null;
 }
 
+/** A short name for the build that's running, e.g. "jyTi_g9i" ("dev" when developing). */
+export function runningVersion(): string {
+  return runningScript()?.replace(/^\/assets\/index-|\.js$/g, "") ?? "dev";
+}
+
 /** True once a newer version of the app has been deployed than the one running. */
 export function useUpdateAvailable(): boolean {
   const [available, setAvailable] = useState(false);
