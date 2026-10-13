@@ -191,35 +191,9 @@ export function useChorePlanner({ home, me, reloadHome, week }: Props & { week: 
 
 /** The Chores tab: what's coming up this week, the calendar and the templates. */
 export function ChoresBoard({ home, me, reloadHome }: Props) {
-  const [view, setViewState] = useState<View>("upcoming");
-  const [week, setWeek] = useState(home.currentWeek);
-  const setView = (v: View) => {
-    setViewState(v);
-    if (v === "upcoming") setWeek(home.currentWeek);
-  };
-  const planner = useChorePlanner({ home, me, reloadHome, week });
+  const [view, setView] = useState<View>("upcoming");
+  const planner = useChorePlanner({ home, me, reloadHome, week: home.currentWeek });
   const { board, error, ticking, activeTemplate } = planner;
-  const isPast = week < home.currentWeek;
-
-  const weekNav = (
-    <div className="week-nav">
-      <button className="icon-btn" aria-label="Previous week" onClick={() => setWeek(addDays(week, -7))}>
-        ‹
-      </button>
-      <button className="week-label" onClick={() => setWeek(home.currentWeek)} title="Jump to this week">
-        {week === home.currentWeek ? "This week" : prettyWeek(week)}
-        <small>{week === home.currentWeek ? prettyWeek(week) : "tap for this week"}</small>
-      </button>
-      <button className="icon-btn" aria-label="Next week" onClick={() => setWeek(addDays(week, 7))}>
-        ›
-      </button>
-      {!isPast && (
-        <button className="icon-btn" aria-label="Week options" onClick={planner.openMenu}>
-          ⋯
-        </button>
-      )}
-    </div>
-  );
 
   return (
     <section className="page">
@@ -227,7 +201,7 @@ export function ChoresBoard({ home, me, reloadHome }: Props) {
         <div className="chores-head">
           <div className="segmented three" role="tablist" aria-label="Chores view">
             <button role="tab" aria-selected={view === "upcoming"} onClick={() => setView("upcoming")}>
-              🔜 Coming up
+              📆 This Week
             </button>
             <button role="tab" aria-selected={view === "calendar"} onClick={() => setView("calendar")}>
               🗓️ Calendar
@@ -246,7 +220,10 @@ export function ChoresBoard({ home, me, reloadHome }: Props) {
         </div>
         {view !== "templates" && activeTemplate && (
           <p className="using-template">
-            Planning from <button className="link" onClick={() => setView("templates")}>{activeTemplate.name}</button>
+            Planning from <button className="link" onClick={() => setView("templates")}>{activeTemplate.name}</button> ·{" "}
+            <button className="link" onClick={planner.openMenu}>
+              Week options
+            </button>
           </p>
         )}
       </header>
@@ -259,7 +236,7 @@ export function ChoresBoard({ home, me, reloadHome }: Props) {
         (ticking && board?.week === home.currentWeek ? (
           <>
             {home.chores.length === 0 && activeTemplate && me && (
-              <StarterChores templateId={activeTemplate.id} week={week} me={me} onAdded={planner.reloadAll} />
+              <StarterChores templateId={activeTemplate.id} week={home.currentWeek} me={me} onAdded={planner.reloadAll} />
             )}
             <TodayChores show="week" ticking={ticking} planning={planner.planning} onOpenItem={planner.openItem} />
           </>
@@ -267,17 +244,7 @@ export function ChoresBoard({ home, me, reloadHome }: Props) {
           <p className="empty">{error ? `😿 ${error}` : "Fluffing the cushions…"}</p>
         ))}
 
-      {view === "calendar" && (
-        <CalendarView
-          home={home}
-          me={me}
-          week={week}
-          setWeek={setWeek}
-          weekNav={weekNav}
-          ticking={ticking}
-          onOpenItem={planner.openItem}
-        />
-      )}
+      {view === "calendar" && <CalendarView home={home} me={me} />}
 
       {planner.sheets}
     </section>

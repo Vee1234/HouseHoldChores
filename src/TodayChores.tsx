@@ -45,7 +45,7 @@ const boxId = (day: string, who: string) => `${day}|${who}`;
 
 /**
  * Chores by day, split into a box per person: `today` (the Today page) or the
- * rest of this `week` (Chores → Coming up). Drag a chore onto someone else's box
+ * rest of this `week` (Chores → This Week). Drag a chore onto someone else's box
  * to hand it over; ticking works exactly as on the cards elsewhere.
  */
 export function TodayChores({
@@ -73,7 +73,8 @@ export function TodayChores({
       localStorage.setItem(ONLY_MINE_KEY, v ? "yes" : "no");
     } catch {}
   };
-  const filtering = onlyMine && !!me;
+  // The Today page always shows everyone; the filter is only offered for This Week.
+  const filtering = show === "week" && onlyMine && !!me;
   const people = filtering ? [me!] : members;
   const [dragging, setDragging] = useState<string | null>(null);
 
@@ -200,7 +201,6 @@ export function TodayChores({
   const laterWithChores = laterDays.filter(
     (day) => people.some((m) => onDay(m.id, day).length > 0) || (!filtering && onDay(NOBODY, day).length > 0),
   );
-  const nothingToday = people.every((m) => onDay(m.id, today).length === 0 && anyDay(m.id).length === 0);
 
   const draggedItem = dragging ? itemsById.get(parseCard(dragging).itemId) : undefined;
   const draggedSlots =
@@ -219,17 +219,18 @@ export function TodayChores({
       onDragCancel={() => setDragging(null)}
     >
       <div className="today-chores">
-        <label className="toggle">
-          <input type="checkbox" checked={filtering} onChange={(e) => setOnlyMine(e.target.checked)} disabled={!me} />
-          <span>Only show my tasks</span>
-        </label>
+        {show === "week" && (
+          <label className="toggle">
+            <input type="checkbox" checked={filtering} onChange={(e) => setOnlyMine(e.target.checked)} disabled={!me} />
+            <span>Only show my tasks</span>
+          </label>
+        )}
 
         {show === "today" && (
           <section className="day-section is-today">
             <h2>
               🧺 Today's chores <span className="day-date">· {longDate(today)}</span>
             </h2>
-            {nothingToday && <p className="empty-day">No chores for this day</p>}
             {dayBoxes(today, true)}
           </section>
         )}

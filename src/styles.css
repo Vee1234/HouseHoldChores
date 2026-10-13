@@ -2364,3 +2364,20 @@ code.version {
 .stack.tight > .toggle {
   align-self: flex-start;
 }
+
+.month-cell.picked {
+  border-color: var(--ink);
+  box-shadow: 0 0 0 1px var(--ink);
+}
+.picked-day h3 {
+  margin-bottom: 8px;
+}
+.picked-day .mini-list li {
+  flex-wrap: wrap;
+}
+.picked-day .avatar-stack {
+  margin-left: auto;
+}
+.picked-day .status-chip {
+  margin-left: 0;
+}

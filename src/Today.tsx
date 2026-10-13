@@ -130,7 +130,7 @@ export function Today({ home, me, goTo, reloadHome }: Props) {
         <div className="card-head">
           <h2>🧺 Your chores this week</h2>
           <button className="link" onClick={() => goTo("chores")}>
-            Coming up →
+            This week →
           </button>
         </div>
         {!me && <p className="muted">Pick who you are under Family to see your chores.</p>}
