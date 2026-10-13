@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { HomeData } from "../shared/core";
 import { ApiError, api, session } from "./api";
+import { refreshApp, useUpdateAvailable } from "./appUpdate";
 import { BuddyTrack } from "./BuddyTrack";
 import { ChoresBoard } from "./ChoresBoard";
 import { Family, signOutDevice } from "./Family";
@@ -39,6 +40,7 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
   const [meId, setMeId] = useState(session.me());
   const { data: home, error, refresh } = usePolled<HomeData>(() => api("GET", "/api/home"), [], 60000);
   const install = useInstallPrompt();
+  const updateReady = useUpdateAvailable();
 
   const signOut = useCallback(() => {
     signOutDevice();
@@ -86,6 +88,14 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
           <Family home={home} me={me} setMe={setMe} reloadHome={refresh} signOut={signOut} installPrompt={install} />
         )}
       </main>
+      {updateReady && (
+        <div className="update-banner" role="status">
+          <span>✨ A new version of Cosy Chores is ready</span>
+          <button className="btn primary" onClick={refreshApp}>
+            Refresh
+          </button>
+        </div>
+      )}
       <nav className="tabbar" aria-label="Sections">
         {TABS.map((t) => (
           <button key={t.id} className={tab === t.id ? "on" : ""} onClick={() => go(t.id)} aria-current={tab === t.id ? "page" : undefined}>
