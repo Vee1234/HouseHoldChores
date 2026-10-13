@@ -260,7 +260,7 @@ export function ScheduleEditor({
             <option value={1}>every week</option>
             {[2, 3, 4, 5, 6, 8].map((n) => (
               <option key={n} value={n}>
-                every {n} weeks
+                every {n} weeks{n === 4 ? " (about monthly)" : ""}
               </option>
             ))}
           </select>

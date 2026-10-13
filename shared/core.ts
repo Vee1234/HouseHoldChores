@@ -52,6 +52,8 @@ export interface Rule extends Schedule {
   assigneeIds: string[];
   /** The week the every-N-weeks count starts from. */
   anchorWeek: string;
+  /** Optional first day it happens; nothing before, and only from that day in its first week. */
+  startDay: string | null;
   position: number;
 }
 

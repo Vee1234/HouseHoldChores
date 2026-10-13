@@ -86,6 +86,9 @@ export function Templates({ home, data, refresh, reloadHome }: Props) {
                         <strong>{chore.title}</strong>
                         <small>
                           {describeSchedule(r)} · {describeEstimate(chore.minutes, chore.per)}
+                          {r.startDay && r.startDay > home.today
+                            ? ` · starts ${new Date(r.startDay + "T00:00:00Z").toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" })}`
+                            : ""}
                         </small>
                       </span>
                       <AssigneeAvatars ids={r.assigneeIds} members={home.members} />
@@ -240,7 +243,7 @@ function RuleSheet({
   const [step, setStep] = useState<"pick" | "new" | "details">(rule ? "details" : available.length ? "pick" : "new");
   const [chore, setChore] = useState<Chore | null>(rule ? (chores.find((c) => c.id === rule.choreId) ?? null) : null);
   const [schedule, setSchedule] = useState<Schedule>(rule ? { ...rule } : NEW_SCHEDULE);
-  const [startNext, setStartNext] = useState(false);
+  const [startDay, setStartDay] = useState(rule?.startDay ?? home.today);
   const [assigneeIds, setAssigneeIds] = useState<string[]>(rule?.assigneeIds ?? []);
   const [editingChore, setEditingChore] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -248,10 +251,20 @@ function RuleSheet({
   const save = async () => {
     if (!chore) return;
     setBusy(true);
-    const anchorWeek = startNext ? nextWeek(home.currentWeek) : home.currentWeek;
-    const body = { ...schedule, assigneeIds, ...(schedule.everyWeeks > 1 && (!rule || rule.everyWeeks !== schedule.everyWeeks) ? { anchorWeek } : {}) };
+    // Just the schedule fields, so nothing else from the rule rides along.
+    const body = {
+      kind: schedule.kind,
+      timesPerWeek: schedule.timesPerWeek,
+      days: schedule.days,
+      everyWeeks: schedule.everyWeeks,
+      time: schedule.time,
+      afterChoreId: schedule.afterChoreId,
+      assigneeIds,
+      // Sending a start day also restarts the every-N-weeks count from its week.
+      ...(!rule || startDay !== (rule.startDay ?? home.today) ? { startDay } : {}),
+    };
     const ok = await attempt(() =>
-      rule ? api("PATCH", `/api/rules/${rule.id}`, body) : api("POST", `/api/templates/${template.id}/rules`, { choreId: chore.id, anchorWeek, ...body }),
+      rule ? api("PATCH", `/api/rules/${rule.id}`, body) : api("POST", `/api/templates/${template.id}/rules`, { choreId: chore.id, ...body }),
     );
     setBusy(false);
     if (ok) {
@@ -334,15 +347,16 @@ function RuleSheet({
               allowRepeat
               afterOptions={chores.filter((c) => c.id !== chore.id && taken.has(c.id))}
             />
-            {schedule.everyWeeks > 1 && (!rule || rule.everyWeeks !== schedule.everyWeeks) && (
-              <label className="row">
-                <span>Starting</span>
-                <select value={startNext ? "next" : "this"} onChange={(e) => setStartNext(e.target.value === "next")}>
-                  <option value="this">this week</option>
-                  <option value="next">next week</option>
-                </select>
-              </label>
-            )}
+            <label className="row">
+              <span>Starts on</span>
+              <input
+                type="date"
+                value={startDay}
+                min={rule ? undefined : home.today}
+                onChange={(e) => setStartDay(e.target.value || home.today)}
+                className="narrow-date"
+              />
+            </label>
           </div>
           <div className="field">
             <span>Who does it?</span>
@@ -368,10 +382,4 @@ function RuleSheet({
       )}
     </Sheet>
   );
-}
-
-function nextWeek(week: string): string {
-  const d = new Date(week + "T00:00:00Z");
-  d.setUTCDate(d.getUTCDate() + 7);
-  return d.toISOString().slice(0, 10);
 }

@@ -17,6 +17,8 @@ import {
   formatMinutes,
   goesPerWeek,
   minutesPerCompletion,
+  weekOf,
+  weekdayIndex,
   weeklyMinutes,
 } from "../shared/core";
 import { api } from "./api";
@@ -127,8 +129,7 @@ export function useChorePlanner({ home, me, reloadHome, week }: Props & { week: 
     <>
       {sheet?.kind === "add" && (
         <AddItemSheet
-          week={week}
-          currentWeek={home.currentWeek}
+          today={home.today}
           memberId={sheet.memberId}
           members={home.members}
           chores={home.chores}
@@ -199,6 +200,13 @@ export function ChoresBoard({ home, me, reloadHome }: Props) {
     <section className="page">
       <header className="page-head">
         <div className="chores-head">
+          <button
+            className="btn primary add-chore-btn"
+            onClick={() => planner.openAdd(me?.id ?? home.members[0]?.id ?? "")}
+            disabled={!home.members.length}
+          >
+            ＋ Add chore
+          </button>
           <div className="segmented three" role="tablist" aria-label="Chores view">
             <button role="tab" aria-selected={view === "upcoming"} onClick={() => setView("upcoming")}>
               📆 This Week
@@ -210,13 +218,6 @@ export function ChoresBoard({ home, me, reloadHome }: Props) {
               📋 Templates
             </button>
           </div>
-          <button
-            className="btn primary add-chore-btn"
-            onClick={() => planner.openAdd(me?.id ?? home.members[0]?.id ?? "")}
-            disabled={!home.members.length}
-          >
-            ＋ Add chore
-          </button>
         </div>
         {view !== "templates" && activeTemplate && (
           <p className="using-template">
@@ -435,13 +436,26 @@ export function ChoreCard({ item, chore, slots, extra, members, today, canComple
 
 // ---- sheets -----------------------------------------------------------------
 
+/** "Every 4 weeks" reads more naturally as about monthly. */
+const REPEAT_CHOICES: { value: string; label: string }[] = [
+  { value: "1", label: "Every week" },
+  { value: "2", label: "Every 2 weeks" },
+  { value: "3", label: "Every 3 weeks" },
+  { value: "4", label: "Every 4 weeks (about monthly)" },
+  { value: "5", label: "Every 5 weeks" },
+  { value: "6", label: "Every 6 weeks" },
+  { value: "8", label: "Every 8 weeks" },
+  { value: "once", label: "Just once" },
+];
+
 /**
- * Adding a chore: either every week (it goes into the template in use, which
- * the board follows) or just for the week being looked at.
+ * Adding a chore, not tied to any particular week: how often, how often it
+ * repeats, the day it starts and who does it. Repeating chores go into the
+ * template in use (which the board follows); "just once" goes into the week
+ * of its start date.
  */
 function AddItemSheet({
-  week,
-  currentWeek,
+  today,
   memberId,
   members,
   chores,
@@ -449,8 +463,7 @@ function AddItemSheet({
   onClose,
   onAdded,
 }: {
-  week: string;
-  currentWeek: string;
+  today: string;
   memberId: string;
   members: Member[];
   chores: Chore[];
@@ -461,46 +474,61 @@ function AddItemSheet({
   const [step, setStep] = useState<"pick" | "new" | "details">(chores.length ? "pick" : "new");
   const [chore, setChore] = useState<Chore | null>(null);
   const [schedule, setSchedule] = useState<Schedule>(NEW_SCHEDULE);
+  const [repeat, setRepeat] = useState("1");
+  const [startDay, setStartDay] = useState(today);
   const [assigneeIds, setAssigneeIds] = useState<string[]>([memberId]);
-  const [howLong, setHowLong] = useState<"every" | "once">(template ? "every" : "once");
   const [busy, setBusy] = useState(false);
   const existingRule = chore && template?.rules.find((r) => r.choreId === chore.id);
-  const everyWeek = howLong === "every" && !!template;
+  const once = repeat === "once";
 
   const choose = (c: Chore) => {
     // Start from how the template in use does this chore, if it has it.
-    const rule = template?.rules.find((r) => r.choreId === c.id);
     // Only the schedule fields: the rule's people and ids mustn't ride along into the save.
-    setSchedule(
-      rule
-        ? {
-            kind: rule.kind,
-            timesPerWeek: rule.timesPerWeek,
-            days: rule.days,
-            everyWeeks: rule.everyWeeks,
-            time: rule.time,
-            afterChoreId: rule.afterChoreId,
-          }
-        : NEW_SCHEDULE,
-    );
-    if (rule?.assigneeIds.length) setAssigneeIds(rule.assigneeIds);
+    const rule = template?.rules.find((r) => r.choreId === c.id);
+    if (rule) {
+      setSchedule({
+        kind: rule.kind,
+        timesPerWeek: rule.timesPerWeek,
+        days: rule.days,
+        everyWeeks: rule.everyWeeks,
+        time: rule.time,
+        afterChoreId: rule.afterChoreId,
+      });
+      setRepeat(String(rule.everyWeeks));
+      if (rule.startDay && rule.startDay > today) setStartDay(rule.startDay);
+      if (rule.assigneeIds.length) setAssigneeIds(rule.assigneeIds);
+    } else setSchedule(NEW_SCHEDULE);
     setChore(c);
     setStep("details");
   };
 
   const save = async () => {
     if (!chore) return;
+    const start = startDay < today ? today : startDay;
+    let body: Schedule = { ...schedule, everyWeeks: once ? 1 : Number(repeat) };
+    if (once && body.kind === "days") {
+      // A one-off only covers the days from its start date to the end of that week.
+      const days = body.days & ~((1 << weekdayIndex(start)) - 1);
+      if (!days) return toast("None of those days fall on or after the start date that week");
+      body = { ...body, days, timesPerWeek: goesPerWeek({ ...body, days }) };
+    }
     setBusy(true);
     const ok = await attempt(() =>
-      !everyWeek
-        ? api("POST", `/api/board/${week}/items`, { choreId: chore.id, assigneeIds, ...schedule, everyWeeks: 1 })
+      once
+        ? api("POST", `/api/board/${weekOf(start)}/items`, { choreId: chore.id, assigneeIds, ...body })
         : existingRule
-          ? api("PATCH", `/api/rules/${existingRule.id}`, { assigneeIds, ...schedule })
-          : api("POST", `/api/templates/${template!.id}/rules`, { choreId: chore.id, assigneeIds, anchorWeek: currentWeek, ...schedule }),
+          ? api("PATCH", `/api/rules/${existingRule.id}`, { assigneeIds, startDay: start, ...body })
+          : api("POST", `/api/templates/${template!.id}/rules`, { choreId: chore.id, assigneeIds, startDay: start, ...body }),
     );
     setBusy(false);
     if (ok) {
-      toast(everyWeek ? `Added to “${template!.name}” — it's on the board from today 🧺` : "Added for that week 🧺");
+      toast(
+        once
+          ? "Added as a one-off 🧺"
+          : start === today
+            ? `Added to “${template!.name}” — it's on the board from today 🧺`
+            : `Added to “${template!.name}” — starts ${new Date(start + "T00:00:00Z").toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" })} 🧺`,
+      );
       onAdded();
       onClose();
     }
@@ -543,41 +571,46 @@ function AddItemSheet({
           <p className="picked">
             {chore.emoji} <strong>{chore.title}</strong>
           </p>
-          {template && (
-            <div className="field">
-              <span>For how long?</span>
-              <div className="segmented small" role="radiogroup" aria-label="For how long">
-                <button type="button" role="radio" aria-checked={everyWeek} aria-selected={everyWeek} onClick={() => setHowLong("every")}>
-                  Every week
-                </button>
-                <button type="button" role="radio" aria-checked={!everyWeek} aria-selected={!everyWeek} onClick={() => setHowLong("once")}>
-                  {week === currentWeek ? "Just this week" : "Just that week"}
-                </button>
-              </div>
-              <small className="muted">
-                {everyWeek
-                  ? existingRule
-                    ? `It's already in “${template.name}” — saving updates it there, and on the board from today.`
-                    : `Goes into “${template.name}”, so it's on the board from today and every week after.`
-                  : `Only for the week of ${prettyWeek(week)}.`}
-              </small>
-            </div>
-          )}
           <div className="field">
             <span>How often?</span>
             <ScheduleEditor
               value={schedule}
               onChange={setSchedule}
-              allowRepeat={everyWeek}
+              allowRepeat={false}
               afterOptions={chores.filter((c) => c.id !== chore.id)}
             />
           </div>
+          <label className="field">
+            <span>Repeats</span>
+            <select value={repeat} onChange={(e) => setRepeat(e.target.value)}>
+              {REPEAT_CHOICES.map((r) => (
+                <option key={r.value} value={r.value}>
+                  {r.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span>{once ? "On / from" : "Starts on"}</span>
+            <input type="date" value={startDay} min={today} onChange={(e) => setStartDay(e.target.value || today)} />
+            <small className="muted">
+              {once
+                ? "A one-off for that week, from this day on."
+                : existingRule
+                  ? `It's already in “${template?.name}” — saving updates it there.`
+                  : `Goes into “${template?.name ?? "your template"}”, so it carries on until you change it.`}
+            </small>
+          </label>
           <div className="field">
             <span>Who's doing it?</span>
             <AssigneePicker members={members} value={assigneeIds} onChange={setAssigneeIds} />
           </div>
-          <button className="btn primary" disabled={busy || assigneeIds.length === 0} onClick={save}>
-            {everyWeek ? (existingRule ? "Save" : "Add chore") : "Add for that week"}
+          <button
+            className="btn primary"
+            disabled={busy || assigneeIds.length === 0 || (!once && !template)}
+            onClick={save}
+          >
+            {!once && !template ? "Loading…" : existingRule && !once ? "Save" : "Add chore"}
           </button>
         </div>
       )}
