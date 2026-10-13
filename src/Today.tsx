@@ -42,7 +42,7 @@ export function Today({ home, me, goTo, reloadHome }: Props) {
   const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
 
   return (
-    <section className="page">
+    <section className="page home-page">
       <header className="greeting">
         <h1>
           {greeting}
@@ -152,6 +152,15 @@ export function Today({ home, me, goTo, reloadHome }: Props) {
       </div>
 
       {board.data && <EveryonesProgress board={board.data} home={home} me={me} />}
+
+      {/* Stays just above the tab bar while you scroll. */}
+      <button
+        className="btn primary floating-add"
+        onClick={() => planner.openAdd(me?.id ?? home.members[0]?.id ?? "")}
+        disabled={!home.members.length}
+      >
+        ＋ Add New Chore
+      </button>
 
       {planner.sheets}
 

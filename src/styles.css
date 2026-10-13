@@ -2176,7 +2176,8 @@ input.narrow-time {
   position: fixed;
   left: 50%;
   transform: translateX(-50%);
-  bottom: calc(env(safe-area-inset-bottom) + 92px);
+  /* Above the home screen's floating Add New Chore button. */
+  bottom: calc(env(safe-area-inset-bottom) + 152px);
   width: min(560px, calc(100% - 20px));
   display: flex;
   align-items: center;
@@ -2385,4 +2386,25 @@ code.version {
 input.narrow-date {
   width: 170px;
   flex: none;
+}
+
+/* ---- home: floating Add New Chore ---- */
+
+.floating-add {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(env(safe-area-inset-bottom) + 94px);
+  width: min(560px, calc(100% - 32px));
+  padding: 13px 18px;
+  font-size: 1.05rem;
+  z-index: 19;
+  box-shadow: 0 4px 0 var(--accent-deep), 0 10px 24px rgb(120 60 30 / 0.25);
+}
+.floating-add:active:not(:disabled) {
+  transform: translateX(-50%) translateY(2px);
+}
+/* Room at the bottom so the button never hides the last card. */
+.home-page {
+  padding-bottom: 64px;
 }
