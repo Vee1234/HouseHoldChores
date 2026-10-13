@@ -38,7 +38,7 @@ To trigger the reminder scheduler by hand during development, open `http://local
 
 ### Automatic deploys
 
-`.github/workflows/deploy.yml` deploys every push to `main`. It runs the tests, applies any new migrations, then deploys. It needs two repository secrets (Settings → Secrets and variables → Actions):
+`.github/workflows/deploy.yml` deploys every push to `master`. It runs the tests, applies any new migrations, then deploys. It needs two repository secrets (Settings → Secrets and variables → Actions):
 
 - `CLOUDFLARE_ACCOUNT_ID`: shown by `npx wrangler whoami`
 - `CLOUDFLARE_API_TOKEN`: create one at dash.cloudflare.com → My Profile → API Tokens → **Edit Cloudflare Workers** template, plus the permission **Account → D1 → Edit**
