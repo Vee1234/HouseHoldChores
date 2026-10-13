@@ -46,7 +46,9 @@ export function useUpdateAvailable(): boolean {
   return available;
 }
 
-/** Throws away the saved copy of the app and reloads the newest version. */
+const REFRESH_PARAM = "refreshed";
+
+/** Throws away the saved copy of the app and loads the newest version. */
 export async function refreshApp() {
   try {
     const keys = await caches.keys();
@@ -54,7 +56,19 @@ export async function refreshApp() {
     const reg = await navigator.serviceWorker?.getRegistration();
     await reg?.update();
   } catch {
-    // Reloading is what matters; the caches will refill.
+    // Loading the page again is what matters; the caches will refill.
   }
-  location.reload();
+  // A fresh address rather than location.reload(), so the phone can't hand back
+  // its in-memory copy of the old page (which points at old build files).
+  const url = new URL(location.href);
+  url.searchParams.set(REFRESH_PARAM, String(Date.now()));
+  location.replace(url.toString());
+}
+
+/** Tidies the refresh marker out of the address bar once the new version has loaded. */
+export function clearRefreshMarker() {
+  const url = new URL(location.href);
+  if (!url.searchParams.has(REFRESH_PARAM)) return;
+  url.searchParams.delete(REFRESH_PARAM);
+  history.replaceState(null, "", url.pathname + url.search + url.hash);
 }

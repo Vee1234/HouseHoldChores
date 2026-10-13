@@ -1,5 +1,6 @@
 // Cosy Chores service worker: offline app shell + push notifications.
-const CACHE = "cosy-v1";
+// Bumping the name makes every phone drop its old saved files on update.
+const CACHE = "cosy-v2";
 const SHELL = ["/", "/manifest.webmanifest", "/icons/icon.svg", "/icons/icon-192.png"];
 
 self.addEventListener("install", (event) => {
@@ -25,8 +26,10 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(
       fetch(req)
         .then((res) => {
-          const copy = res.clone();
-          caches.open(CACHE).then((c) => c.put("/", copy));
+          if (res.ok) {
+            const copy = res.clone();
+            caches.open(CACHE).then((c) => c.put("/", copy));
+          }
           return res;
         })
         .catch(() => caches.match("/")),
@@ -40,7 +43,9 @@ self.addEventListener("fetch", (event) => {
       (hit) =>
         hit ||
         fetch(req).then((res) => {
-          if (res.ok && (url.pathname.startsWith("/assets/") || url.pathname.startsWith("/icons/"))) {
+          // Only keep real files: never save an HTML page under a script or stylesheet's name.
+          const isPage = (res.headers.get("Content-Type") || "").includes("text/html");
+          if (res.ok && !isPage && (url.pathname.startsWith("/assets/") || url.pathname.startsWith("/icons/"))) {
             const copy = res.clone();
             caches.open(CACHE).then((c) => c.put(req, copy));
           }
