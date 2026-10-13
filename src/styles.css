@@ -2236,7 +2236,7 @@ code.version {
   gap: 18px;
 }
 .today-chores > .toggle {
-  align-self: flex-end;
+  align-self: flex-start;
 }
 .day-section {
   display: flex;
@@ -2322,17 +2322,18 @@ code.version {
 
 .chores-head {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 10px;
-  flex-wrap: wrap;
 }
 .chores-head .segmented {
-  flex: 1;
-  min-width: 260px;
+  width: 100%;
+  max-width: none;
 }
+/* Full width, on its own line under the view switcher. */
 .add-chore-btn {
-  flex: none;
-  white-space: nowrap;
+  width: 100%;
+  padding: 12px 18px;
+  font-size: 1.02rem;
 }
 
 .done-so-far {
@@ -2358,4 +2359,8 @@ code.version {
 }
 .done-list .inline-sprite {
   vertical-align: -4px;
+}
+
+.stack.tight > .toggle {
+  align-self: flex-start;
 }
