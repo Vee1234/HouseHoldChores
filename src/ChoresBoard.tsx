@@ -23,6 +23,7 @@ import {
   type HomeData,
   type Member,
   type Schedule,
+  type Template,
   type TemplatesData,
   addDays,
   blockingChore,
@@ -162,6 +163,7 @@ export function ChoresBoard({ home, me, reloadHome }: Props) {
   return (
     <section className="page">
       <header className="page-head">
+        <div className="chores-head">
         <div className="segmented three" role="tablist" aria-label="Chores view">
           <button role="tab" aria-selected={view === "today"} onClick={() => setView("today")}>
             ☀️ Today
@@ -171,6 +173,14 @@ export function ChoresBoard({ home, me, reloadHome }: Props) {
           </button>
           <button role="tab" aria-selected={view === "templates"} onClick={() => setView("templates")}>
             📋 Templates
+          </button>
+        </div>
+          <button
+            className="btn primary add-chore-btn"
+            onClick={() => setSheet({ kind: "add", memberId: me?.id ?? home.members[0]?.id ?? "" })}
+            disabled={!home.members.length}
+          >
+            ＋ Add chore
           </button>
         </div>
         {view !== "templates" && activeTemplate && (
@@ -228,17 +238,20 @@ export function ChoresBoard({ home, me, reloadHome }: Props) {
       {sheet?.kind === "add" && (
         <AddItemSheet
           week={week}
+          currentWeek={home.currentWeek}
           memberId={sheet.memberId}
           members={home.members}
           chores={home.chores}
-          templateRules={activeTemplate?.rules ?? []}
+          template={activeTemplate}
           onClose={() => setSheet(null)}
-          onAdded={() => (reloadHome(), refresh())}
+          onAdded={() => (reloadHome(), refresh(), templates.refresh())}
         />
       )}
       {sheet?.kind === "item" && board && (
         <ItemSheet
           item={board.items.find((i) => i.id === sheet.itemId)}
+          completions={board.completions.filter((c) => c.itemId === sheet.itemId)}
+          onUndo={(item, c) => toggle(item, { day: c.day, label: "", completion: c })}
           chores={chores}
           members={home.members}
           onClose={() => setSheet(null)}
@@ -455,20 +468,26 @@ export function ChoreCard({ item, chore, slots, extra, members, today, canComple
 
 // ---- sheets -----------------------------------------------------------------
 
+/**
+ * Adding a chore: either every week (it goes into the template in use, which
+ * the board follows) or just for the week being looked at.
+ */
 function AddItemSheet({
   week,
+  currentWeek,
   memberId,
   members,
   chores,
-  templateRules,
+  template,
   onClose,
   onAdded,
 }: {
   week: string;
+  currentWeek: string;
   memberId: string;
   members: Member[];
   chores: Chore[];
-  templateRules: (Schedule & { choreId: string })[];
+  template: Template | undefined;
   onClose: () => void;
   onAdded: () => void;
 }) {
@@ -476,23 +495,52 @@ function AddItemSheet({
   const [chore, setChore] = useState<Chore | null>(null);
   const [schedule, setSchedule] = useState<Schedule>(NEW_SCHEDULE);
   const [assigneeIds, setAssigneeIds] = useState<string[]>([memberId]);
+  const [howLong, setHowLong] = useState<"every" | "once">(template ? "every" : "once");
   const [busy, setBusy] = useState(false);
-  const who = members.find((m) => m.id === memberId);
+  const existingRule = chore && template?.rules.find((r) => r.choreId === chore.id);
+  const everyWeek = howLong === "every" && !!template;
 
   const choose = (c: Chore) => {
     // Start from how the template in use does this chore, if it has it.
-    const rule = templateRules.find((r) => r.choreId === c.id);
+    const rule = template?.rules.find((r) => r.choreId === c.id);
+    // Only the schedule fields: the rule's people and ids mustn't ride along into the save.
     setSchedule(
       rule
-        ? { kind: rule.kind, timesPerWeek: rule.timesPerWeek, days: rule.days, everyWeeks: 1, time: rule.time, afterChoreId: rule.afterChoreId }
+        ? {
+            kind: rule.kind,
+            timesPerWeek: rule.timesPerWeek,
+            days: rule.days,
+            everyWeeks: rule.everyWeeks,
+            time: rule.time,
+            afterChoreId: rule.afterChoreId,
+          }
         : NEW_SCHEDULE,
     );
+    if (rule?.assigneeIds.length) setAssigneeIds(rule.assigneeIds);
     setChore(c);
     setStep("details");
   };
 
+  const save = async () => {
+    if (!chore) return;
+    setBusy(true);
+    const ok = await attempt(() =>
+      !everyWeek
+        ? api("POST", `/api/board/${week}/items`, { choreId: chore.id, assigneeIds, ...schedule, everyWeeks: 1 })
+        : existingRule
+          ? api("PATCH", `/api/rules/${existingRule.id}`, { assigneeIds, ...schedule })
+          : api("POST", `/api/templates/${template!.id}/rules`, { choreId: chore.id, assigneeIds, anchorWeek: currentWeek, ...schedule }),
+    );
+    setBusy(false);
+    if (ok) {
+      toast(everyWeek ? `Added to “${template!.name}” — it's on the board from today 🧺` : "Added for that week 🧺");
+      onAdded();
+      onClose();
+    }
+  };
+
   return (
-    <Sheet title={who ? `Add a chore for ${who.name}` : "Add a chore this week"} onClose={onClose}>
+    <Sheet title="Add a chore" onClose={onClose}>
       {step === "new" && (
         <>
           {chores.length > 0 && <BackButton onClick={() => setStep("pick")} />}
@@ -528,12 +576,32 @@ function AddItemSheet({
           <p className="picked">
             {chore.emoji} <strong>{chore.title}</strong>
           </p>
+          {template && (
+            <div className="field">
+              <span>For how long?</span>
+              <div className="segmented small" role="radiogroup" aria-label="For how long">
+                <button type="button" role="radio" aria-checked={everyWeek} aria-selected={everyWeek} onClick={() => setHowLong("every")}>
+                  Every week
+                </button>
+                <button type="button" role="radio" aria-checked={!everyWeek} aria-selected={!everyWeek} onClick={() => setHowLong("once")}>
+                  {week === currentWeek ? "Just this week" : "Just that week"}
+                </button>
+              </div>
+              <small className="muted">
+                {everyWeek
+                  ? existingRule
+                    ? `It's already in “${template.name}” — saving updates it there, and on the board from today.`
+                    : `Goes into “${template.name}”, so it's on the board from today and every week after.`
+                  : `Only for the week of ${prettyWeek(week)}.`}
+              </small>
+            </div>
+          )}
           <div className="field">
-            <span>How often this week?</span>
+            <span>How often?</span>
             <ScheduleEditor
               value={schedule}
               onChange={setSchedule}
-              allowRepeat={false}
+              allowRepeat={everyWeek}
               afterOptions={chores.filter((c) => c.id !== chore.id)}
             />
           </div>
@@ -541,21 +609,8 @@ function AddItemSheet({
             <span>Who's doing it?</span>
             <AssigneePicker members={members} value={assigneeIds} onChange={setAssigneeIds} />
           </div>
-          <button
-            className="btn primary"
-            disabled={busy || assigneeIds.length === 0}
-            onClick={async () => {
-              setBusy(true);
-              const ok = await attempt(() => api("POST", `/api/board/${week}/items`, { choreId: chore.id, assigneeIds, ...schedule }));
-              setBusy(false);
-              if (ok) {
-                toast("Added 🧺");
-                onAdded();
-                onClose();
-              }
-            }}
-          >
-            Add to this week
+          <button className="btn primary" disabled={busy || assigneeIds.length === 0} onClick={save}>
+            {everyWeek ? (existingRule ? "Save" : "Add chore") : "Add for that week"}
           </button>
         </div>
       )}
@@ -565,12 +620,17 @@ function AddItemSheet({
 
 function ItemSheet({
   item,
+  completions,
+  onUndo,
   chores,
   members,
   onClose,
   onChanged,
 }: {
   item: BoardItem | undefined;
+  completions: Completion[];
+  /** Sets a done go back to not done. */
+  onUndo: (item: BoardItem, completion: Completion) => void;
   chores: Map<string, Chore>;
   members: Member[];
   onClose: () => void;
@@ -597,6 +657,9 @@ function ItemSheet({
         </>
       ) : (
         <div className="stack">
+          {completions.length > 0 && (
+            <DoneSoFar item={item} completions={completions} members={members} onUndo={(c) => onUndo(item, c)} />
+          )}
           <p className="muted small">
             Changes here are for this week only. Editing this chore in the template in use will update it here again.
           </p>
@@ -648,6 +711,57 @@ function ItemSheet({
         </div>
       )}
     </Sheet>
+  );
+}
+
+/** The goes of a chore done this week, each of which can be set back to not done. */
+function DoneSoFar({
+  item,
+  completions,
+  members,
+  onUndo,
+}: {
+  item: BoardItem;
+  completions: Completion[];
+  members: Member[];
+  onUndo: (c: Completion) => void;
+}) {
+  const sorted = [...completions].sort((a, b) => a.doneAt - b.doneAt);
+  const allDone = completions.length >= goesPerWeek(item);
+  const latest = sorted[sorted.length - 1];
+  const dayName = (day: string | null) =>
+    day ? new Date(day + "T00:00:00Z").toLocaleDateString(undefined, { weekday: "short", timeZone: "UTC" }) : "";
+  return (
+    <div className="field done-so-far">
+      <span>{allDone ? "✅ Completed" : "Done so far"}</span>
+      {allDone && (
+        <button className="btn" onClick={() => onUndo(latest)}>
+          ↩️ Mark as not done
+        </button>
+      )}
+      <ul className="done-list">
+        {sorted.map((c) => {
+          const who = members.find((m) => m.id === c.memberId);
+          return (
+            <li key={c.id}>
+              <span>
+                ✓ {item.kind === "days" ? dayName(c.day) : dayName(c.day) || "One go"} · done by{" "}
+                {who ? (
+                  <>
+                    <BuddySprite buddy={who.buddy} size={18} className="inline-sprite" /> {who.name}
+                  </>
+                ) : (
+                  "someone"
+                )}
+              </span>
+              <button className="link" onClick={() => onUndo(c)}>
+                Undo
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 
