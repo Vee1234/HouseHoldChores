@@ -2217,3 +2217,75 @@ code.version {
     color: var(--accent);
   }
 }
+
+/* ---- chores: today view ---- */
+
+.segmented.four {
+  grid-template-columns: repeat(4, 1fr);
+  max-width: 620px;
+}
+@media (max-width: 480px) {
+  .segmented.four button {
+    font-size: 0.82rem;
+    padding: 8px 2px;
+  }
+}
+.today-chores {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.today-chores > .toggle {
+  align-self: flex-end;
+}
+.day-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.day-section h2 {
+  font-size: 1.35rem;
+}
+.day-section.is-today {
+  background: color-mix(in srgb, var(--accent) 7%, var(--paper));
+  border: 2px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  border-radius: var(--radius);
+  box-shadow: var(--clay);
+  padding: 16px;
+}
+.day-date {
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--ink-soft);
+}
+.later-day {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.later-day h3,
+.any-day-head {
+  font-size: 1rem;
+  color: var(--ink-soft);
+  border-bottom: 2px dashed var(--line);
+  padding-bottom: 4px;
+}
+.any-day-head {
+  margin-top: 6px;
+}
+.day-cards {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1fr;
+}
+@media (min-width: 760px) {
+  .day-cards {
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  }
+}
+.empty-day {
+  margin: 0;
+  color: var(--ink-soft);
+  font-weight: 700;
+}
