@@ -2319,3 +2319,18 @@ code.version {
   border-top: 6px dashed var(--danger);
   background: color-mix(in srgb, var(--danger) 6%, var(--paper));
 }
+
+.chores-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.chores-head .segmented {
+  flex: 1;
+  min-width: 260px;
+}
+.add-chore-btn {
+  flex: none;
+  white-space: nowrap;
+}
