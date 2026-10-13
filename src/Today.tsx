@@ -153,14 +153,17 @@ export function Today({ home, me, goTo, reloadHome }: Props) {
 
       {board.data && <EveryonesProgress board={board.data} home={home} me={me} />}
 
-      {/* Stays just above the tab bar while you scroll. */}
-      <button
-        className="btn primary floating-add"
-        onClick={() => planner.openAdd(me?.id ?? home.members[0]?.id ?? "")}
-        disabled={!home.members.length}
-      >
-        ＋ Add New Chore
-      </button>
+      {/* Stays just above the tab bar while you scroll, on a strip of background
+          so the page doesn't show through the gap. */}
+      <div className="floating-add-bar">
+        <button
+          className="btn primary floating-add"
+          onClick={() => planner.openAdd(me?.id ?? home.members[0]?.id ?? "")}
+          disabled={!home.members.length}
+        >
+          ＋ Add New Chore
+        </button>
+      </div>
 
       {planner.sheets}
 
