@@ -1,7 +1,6 @@
 import { useState } from "react";
 import {
   type Announcement,
-  type Board,
   type HomeData,
   type Member,
   type Reminder,
@@ -9,7 +8,9 @@ import {
   goesPerWeek,
 } from "../shared/core";
 import { api } from "./api";
+import { useChorePlanner } from "./ChoresBoard";
 import { EveryonesProgress } from "./EveryonesProgress";
+import { TodayChores } from "./TodayChores";
 import { Updates } from "./Updates";
 import { BuddySprite, NOTE_COLORS, Sheet, attempt, prettyDay, toast, usePolled } from "./ui";
 
@@ -17,13 +18,15 @@ interface Props {
   home: HomeData;
   me: Member | null;
   goTo: (tab: "chores" | "reminders") => void;
+  reloadHome: () => void;
 }
 
-export function Today({ home, me, goTo }: Props) {
+export function Today({ home, me, goTo, reloadHome }: Props) {
   const [day, setDay] = useState(home.today);
   const [posting, setPosting] = useState(false);
   const notes = usePolled<Announcement[]>(() => api("GET", `/api/announcements?day=${day}`), [day]);
-  const board = usePolled<Board>(() => api("GET", `/api/board/${home.currentWeek}`), [home.currentWeek]);
+  const planner = useChorePlanner({ home, me, reloadHome, week: home.currentWeek });
+  const board = { data: planner.board };
   const reminders = usePolled<Reminder[]>(() => api("GET", "/api/reminders"), []);
   const members = new Map(home.members.map((m) => [m.id, m]));
   const chores = new Map(home.chores.map((c) => [c.id, c]));
@@ -47,6 +50,12 @@ export function Today({ home, me, goTo }: Props) {
         </h1>
         <p className="muted">{home.household.name}</p>
       </header>
+
+      {planner.ticking ? (
+        <TodayChores show="today" ticking={planner.ticking} planning={planner.planning} onOpenItem={planner.openItem} />
+      ) : (
+        <p className="empty">Fluffing the cushions…</p>
+      )}
 
       <div className="corkboard">
         <div className="corkboard-head">
@@ -99,7 +108,7 @@ export function Today({ home, me, goTo }: Props) {
         between={
         <div className="card">
           <div className="card-head">
-            <h2>⏰ Coming up</h2>
+            <h2>⏰ Upcoming reminders</h2>
             <button className="link" onClick={() => goTo("reminders")}>
               All reminders →
             </button>
@@ -121,7 +130,7 @@ export function Today({ home, me, goTo }: Props) {
         <div className="card-head">
           <h2>🧺 Your chores this week</h2>
           <button className="link" onClick={() => goTo("chores")}>
-            See chores →
+            Coming up →
           </button>
         </div>
         {!me && <p className="muted">Pick who you are under Family to see your chores.</p>}
@@ -143,6 +152,8 @@ export function Today({ home, me, goTo }: Props) {
       </div>
 
       {board.data && <EveryonesProgress board={board.data} home={home} me={me} />}
+
+      {planner.sheets}
 
       {posting && (
         <NoteSheet

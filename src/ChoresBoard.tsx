@@ -1,19 +1,3 @@
-import {
-  DndContext,
-  type DragEndEvent,
-  type DragOverEvent,
-  DragOverlay,
-  type DragStartEvent,
-  KeyboardSensor,
-  MouseSensor,
-  TouchSensor,
-  closestCorners,
-  useDroppable,
-  useSensor,
-  useSensors,
-} from "@dnd-kit/core";
-import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
 import { useEffect, useMemo, useState } from "react";
 import {
   type Board,
@@ -54,7 +38,7 @@ import { Templates } from "./Templates";
 import { TodayChores } from "./TodayChores";
 import { Avatar, BuddySprite, Sheet, attempt, memberColor, prettyWeek, toast, usePolled } from "./ui";
 
-type View = "today" | "calendar" | "templates";
+type View = "upcoming" | "calendar" | "templates";
 
 interface Props {
   home: HomeData;
@@ -73,30 +57,25 @@ export interface Ticking {
   waitingFor: (item: BoardItem, slot: Slot) => Chore | undefined;
 }
 
-/** Extra actions for the Today view's person boxes. */
+/** Extra actions for the person boxes. */
 export interface Planning {
   /** Hands a chore from one person to another (from = null for one nobody's on yet). */
   handOver: (item: BoardItem, from: string | null, to: string) => void;
   onAdd: (memberId: string) => void;
 }
 
-/** The Chores tab: today's chores (by person), the calendar and the templates. */
-export function ChoresBoard({ home, me, reloadHome }: Props) {
-  // Always opens on Today, so the first thing you see is what needs doing now.
-  const [view, setViewState] = useState<View>("today");
-  const [week, setWeek] = useState(home.currentWeek);
-  const setView = (v: View) => {
-    setViewState(v);
-    if (v === "today") setWeek(home.currentWeek);
-  };
+/**
+ * Everything for working with one week's chores: the board, ticking things
+ * off, handing chores over, and the add/edit sheets. Shared by the Today page
+ * and the Chores tab so they behave the same.
+ */
+export function useChorePlanner({ home, me, reloadHome, week }: Props & { week: string }) {
   const { data: board, setData: setBoard, refresh, error } = usePolled<Board>(() => api("GET", `/api/board/${week}`), [week]);
   const templates = usePolled<TemplatesData>(() => api("GET", "/api/templates"), [], 60000);
   const [sheet, setSheet] = useState<
     { kind: "add"; memberId: string } | { kind: "item"; itemId: string } | { kind: "menu" } | null
   >(null);
-
   const chores = useMemo(() => new Map(home.chores.map((c) => [c.id, c])), [home.chores]);
-  const isPast = week < home.currentWeek;
   const activeTemplate = templates.data?.templates.find((t) => t.id === templates.data?.activeTemplateId);
 
   // Keeps the buddy track in step with ticks the moment they happen.
@@ -140,101 +119,12 @@ export function ChoresBoard({ home, me, reloadHome }: Props) {
     mutate(() => api("PATCH", `/api/items/${item.id}`, { assigneeIds }));
   };
 
-  const weekNav = (
-    <div className="week-nav">
-      <button className="icon-btn" aria-label="Previous week" onClick={() => setWeek(addDays(week, -7))}>
-        ‹
-      </button>
-      <button className="week-label" onClick={() => setWeek(home.currentWeek)} title="Jump to this week">
-        {week === home.currentWeek ? "This week" : prettyWeek(week)}
-        <small>{week === home.currentWeek ? prettyWeek(week) : "tap for this week"}</small>
-      </button>
-      <button className="icon-btn" aria-label="Next week" onClick={() => setWeek(addDays(week, 7))}>
-        ›
-      </button>
-      {!isPast && (
-        <button className="icon-btn" aria-label="Week options" onClick={() => setSheet({ kind: "menu" })}>
-          ⋯
-        </button>
-      )}
-    </div>
-  );
+  const ticking: Ticking | null = board ? { board, chores, members: home.members, me, today: home.today, toggle, waitingFor } : null;
+  const planning: Planning = { handOver, onAdd: (memberId) => setSheet({ kind: "add", memberId }) };
+  const reloadAll = () => (reloadHome(), refresh(), templates.refresh());
 
-  return (
-    <section className="page">
-      <header className="page-head">
-        <div className="chores-head">
-        <div className="segmented three" role="tablist" aria-label="Chores view">
-          <button role="tab" aria-selected={view === "today"} onClick={() => setView("today")}>
-            ☀️ Today
-          </button>
-          <button role="tab" aria-selected={view === "calendar"} onClick={() => setView("calendar")}>
-            🗓️ Calendar
-          </button>
-          <button role="tab" aria-selected={view === "templates"} onClick={() => setView("templates")}>
-            📋 Templates
-          </button>
-        </div>
-          <button
-            className="btn primary add-chore-btn"
-            onClick={() => setSheet({ kind: "add", memberId: me?.id ?? home.members[0]?.id ?? "" })}
-            disabled={!home.members.length}
-          >
-            ＋ Add chore
-          </button>
-        </div>
-        {view !== "templates" && activeTemplate && (
-          <p className="using-template">
-            Planning from <button className="link" onClick={() => setView("templates")}>{activeTemplate.name}</button>
-          </p>
-        )}
-      </header>
-
-      {view === "templates" && (
-        <Templates
-          home={home}
-          data={templates.data}
-          refresh={() => {
-            templates.refresh();
-            refresh();
-          }}
-          reloadHome={reloadHome}
-        />
-      )}
-
-      {view === "today" &&
-        (board && board.week === home.currentWeek ? (
-          <>
-            {home.chores.length === 0 && activeTemplate && me && (
-              <StarterChores
-                templateId={activeTemplate.id}
-                week={week}
-                me={me}
-                onAdded={() => (reloadHome(), refresh(), templates.refresh())}
-              />
-            )}
-            <TodayChores
-              ticking={{ board, chores, members: home.members, me, today: home.today, toggle, waitingFor }}
-              planning={{ handOver, onAdd: (memberId) => setSheet({ kind: "add", memberId }) }}
-              onOpenItem={(itemId) => setSheet({ kind: "item", itemId })}
-            />
-          </>
-        ) : (
-          <p className="empty">{error ? `😿 ${error}` : "Fluffing the cushions…"}</p>
-        ))}
-
-      {view === "calendar" && (
-        <CalendarView
-          home={home}
-          me={me}
-          week={week}
-          setWeek={setWeek}
-          weekNav={weekNav}
-          ticking={board ? { board, chores, members: home.members, me, today: home.today, toggle, waitingFor } : null}
-          onOpenItem={(itemId) => setSheet({ kind: "item", itemId })}
-        />
-      )}
-
+  const sheets = (
+    <>
       {sheet?.kind === "add" && (
         <AddItemSheet
           week={week}
@@ -244,7 +134,7 @@ export function ChoresBoard({ home, me, reloadHome }: Props) {
           chores={home.chores}
           template={activeTemplate}
           onClose={() => setSheet(null)}
-          onAdded={() => (reloadHome(), refresh(), templates.refresh())}
+          onAdded={reloadAll}
         />
       )}
       {sheet?.kind === "item" && board && (
@@ -280,6 +170,116 @@ export function ChoresBoard({ home, me, reloadHome }: Props) {
           }
         />
       )}
+    </>
+  );
+
+  return {
+    board,
+    error,
+    refresh,
+    templates,
+    activeTemplate,
+    ticking,
+    planning,
+    reloadAll,
+    openItem: (itemId: string) => setSheet({ kind: "item", itemId }),
+    openAdd: (memberId: string) => setSheet({ kind: "add", memberId }),
+    openMenu: () => setSheet({ kind: "menu" }),
+    sheets,
+  };
+}
+
+/** The Chores tab: what's coming up this week, the calendar and the templates. */
+export function ChoresBoard({ home, me, reloadHome }: Props) {
+  const [view, setViewState] = useState<View>("upcoming");
+  const [week, setWeek] = useState(home.currentWeek);
+  const setView = (v: View) => {
+    setViewState(v);
+    if (v === "upcoming") setWeek(home.currentWeek);
+  };
+  const planner = useChorePlanner({ home, me, reloadHome, week });
+  const { board, error, ticking, activeTemplate } = planner;
+  const isPast = week < home.currentWeek;
+
+  const weekNav = (
+    <div className="week-nav">
+      <button className="icon-btn" aria-label="Previous week" onClick={() => setWeek(addDays(week, -7))}>
+        ‹
+      </button>
+      <button className="week-label" onClick={() => setWeek(home.currentWeek)} title="Jump to this week">
+        {week === home.currentWeek ? "This week" : prettyWeek(week)}
+        <small>{week === home.currentWeek ? prettyWeek(week) : "tap for this week"}</small>
+      </button>
+      <button className="icon-btn" aria-label="Next week" onClick={() => setWeek(addDays(week, 7))}>
+        ›
+      </button>
+      {!isPast && (
+        <button className="icon-btn" aria-label="Week options" onClick={planner.openMenu}>
+          ⋯
+        </button>
+      )}
+    </div>
+  );
+
+  return (
+    <section className="page">
+      <header className="page-head">
+        <div className="chores-head">
+          <div className="segmented three" role="tablist" aria-label="Chores view">
+            <button role="tab" aria-selected={view === "upcoming"} onClick={() => setView("upcoming")}>
+              🔜 Coming up
+            </button>
+            <button role="tab" aria-selected={view === "calendar"} onClick={() => setView("calendar")}>
+              🗓️ Calendar
+            </button>
+            <button role="tab" aria-selected={view === "templates"} onClick={() => setView("templates")}>
+              📋 Templates
+            </button>
+          </div>
+          <button
+            className="btn primary add-chore-btn"
+            onClick={() => planner.openAdd(me?.id ?? home.members[0]?.id ?? "")}
+            disabled={!home.members.length}
+          >
+            ＋ Add chore
+          </button>
+        </div>
+        {view !== "templates" && activeTemplate && (
+          <p className="using-template">
+            Planning from <button className="link" onClick={() => setView("templates")}>{activeTemplate.name}</button>
+          </p>
+        )}
+      </header>
+
+      {view === "templates" && (
+        <Templates home={home} data={planner.templates.data} refresh={planner.reloadAll} reloadHome={reloadHome} />
+      )}
+
+      {view === "upcoming" &&
+        (ticking && board?.week === home.currentWeek ? (
+          <>
+            {home.chores.length === 0 && activeTemplate && me && (
+              <StarterChores templateId={activeTemplate.id} week={week} me={me} onAdded={planner.reloadAll} />
+            )}
+            <TodayChores show="week" ticking={ticking} planning={planner.planning} onOpenItem={planner.openItem} />
+          </>
+        ) : (
+          <p className="empty">{error ? `😿 ${error}` : "Fluffing the cushions…"}</p>
+        ))}
+
+      {view === "calendar" && (
+        <CalendarView
+          home={home}
+          me={me}
+          week={week}
+          setWeek={setWeek}
+          weekNav={weekNav}
+          ticking={ticking}
+          onOpenItem={planner.openItem}
+        />
+      )}
+
+      {planner.sheets}
     </section>
   );
 }
