@@ -50,11 +50,11 @@ import {
   slotsFor,
 } from "./choreParts";
 import { Templates } from "./Templates";
+import { TodayChores } from "./TodayChores";
 import { Avatar, BuddySprite, Sheet, attempt, memberColor, prettyWeek, toast, usePolled } from "./ui";
 
 const UNASSIGNED = "unassigned";
-type View = "board" | "calendar" | "templates";
-const VIEW_KEY = "cosy.choresView";
+type View = "today" | "board" | "calendar" | "templates";
 
 interface Props {
   home: HomeData;
@@ -73,23 +73,15 @@ export interface Ticking {
   waitingFor: (item: BoardItem, slot: Slot) => Chore | undefined;
 }
 
-/** The Chores tab: the board, the calendar and the templates. */
+/** The Chores tab: today's chores, the board, the calendar and the templates. */
 export function ChoresBoard({ home, me, reloadHome }: Props) {
-  const [view, setViewState] = useState<View>(() => {
-    try {
-      const saved = localStorage.getItem(VIEW_KEY) as View | null;
-      return saved === "calendar" || saved === "templates" ? saved : "board";
-    } catch {
-      return "board";
-    }
-  });
+  // Always opens on Today, so the first thing you see is what needs doing now.
+  const [view, setViewState] = useState<View>("today");
+  const [week, setWeek] = useState(home.currentWeek);
   const setView = (v: View) => {
     setViewState(v);
-    try {
-      localStorage.setItem(VIEW_KEY, v);
-    } catch {}
+    if (v === "today") setWeek(home.currentWeek);
   };
-  const [week, setWeek] = useState(home.currentWeek);
   const { data: board, setData: setBoard, refresh, error } = usePolled<Board>(() => api("GET", `/api/board/${week}`), [week]);
   const templates = usePolled<TemplatesData>(() => api("GET", "/api/templates"), [], 60000);
   const [sheet, setSheet] = useState<
@@ -162,7 +154,10 @@ export function ChoresBoard({ home, me, reloadHome }: Props) {
   return (
     <section className="page">
       <header className="page-head">
-        <div className="segmented three" role="tablist" aria-label="Chores view">
+        <div className="segmented four" role="tablist" aria-label="Chores view">
+          <button role="tab" aria-selected={view === "today"} onClick={() => setView("today")}>
+            ☀️ Today
+          </button>
           <button role="tab" aria-selected={view === "board"} onClick={() => setView("board")}>
             🧺 Board
           </button>
@@ -192,6 +187,16 @@ export function ChoresBoard({ home, me, reloadHome }: Props) {
           reloadHome={reloadHome}
         />
       )}
+
+      {view === "today" &&
+        (board && board.week === home.currentWeek ? (
+          <TodayChores
+            ticking={{ board, chores, members: home.members, me, today: home.today, toggle, waitingFor }}
+            onOpenItem={(itemId) => setSheet({ kind: "item", itemId })}
+          />
+        ) : (
+          <p className="empty">{error ? `😿 ${error}` : "Fluffing the cushions…"}</p>
+        ))}
 
       {view === "calendar" && (
         <CalendarView
