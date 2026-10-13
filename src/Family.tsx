@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { HomeData, Member } from "../shared/core";
 import { api, session } from "./api";
-import { refreshApp } from "./appUpdate";
+import { refreshApp, runningVersion } from "./appUpdate";
 import { type PushState, disablePush, enablePush, isStandalone, pushState, relinkPush } from "./push";
 import { Avatar, BuddyChoices, ColorChoices, Sheet, attempt, toast } from "./ui";
 
@@ -143,7 +143,10 @@ export function Family({ home, me, setMe, reloadHome, signOut, installPrompt }: 
 
       <div className="card">
         <h2>🔄 App version</h2>
-        <p className="muted">Not seeing the latest changes? This reloads the newest version of the app.</p>
+        <p className="muted">
+          You're on version <code className="version">{runningVersion()}</code>. Not seeing the latest changes? This
+          reloads the newest version of the app.
+        </p>
         <button className="btn" onClick={refreshApp}>
           Refresh app
         </button>
