@@ -846,7 +846,9 @@ function ItemSheet({
         </>
       ) : (
         <div className="stack">
-          <p className="muted small">Changes here are for this week only — edit a template to change every week.</p>
+          <p className="muted small">
+            Changes here are for this week only. Editing this chore in the template in use will update it here again.
+          </p>
           <div className="field">
             <span>Who's doing it this week?</span>
             <AssigneePicker

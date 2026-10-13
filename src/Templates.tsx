@@ -30,8 +30,9 @@ export function Templates({ home, data, refresh, reloadHome }: Props) {
   return (
     <div className="stack">
       <p className="banner">
-        A template is a set of chores, each with how often it happens and who does it. The one in use plans every week until
-        you switch — switching midweek applies from today.
+        A template is a set of chores, each with how often it happens and who does it. The board always follows the one in
+        use: changes (or switching templates) show up straight away, from today on — days already gone and anything already
+        ticked stay as they were.
       </p>
 
       <div className="template-tabs" role="tablist" aria-label="Templates">
