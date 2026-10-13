@@ -6,9 +6,11 @@ import {
   type Member,
   type Reminder,
   addDays,
+  goesPerWeek,
 } from "../shared/core";
 import { api } from "./api";
-import { NOTE_COLORS, Sheet, attempt, prettyDay, toast, usePolled } from "./ui";
+import { EveryonesProgress } from "./EveryonesProgress";
+import { BuddySprite, NOTE_COLORS, Sheet, attempt, prettyDay, toast, usePolled } from "./ui";
 
 interface Props {
   home: HomeData;
@@ -25,9 +27,9 @@ export function Today({ home, me, goTo }: Props) {
   const members = new Map(home.members.map((m) => [m.id, m]));
   const chores = new Map(home.chores.map((c) => [c.id, c]));
 
-  const myItems = (board.data?.items ?? []).filter((i) => me && i.memberId === me.id);
+  const myItems = (board.data?.items ?? []).filter((i) => me && i.assigneeIds.includes(me.id));
   const doneCount = (itemId: string) => board.data?.completions.filter((c) => c.itemId === itemId).length ?? 0;
-  const left = myItems.filter((i) => doneCount(i.id) < i.timesPerWeek);
+  const left = myItems.filter((i) => doneCount(i.id) < goesPerWeek(i));
   const upcoming = (reminders.data ?? [])
     .filter((r) => r.active && (r.memberId === null || r.memberId === me?.id))
     .slice(0, 3);
@@ -40,7 +42,7 @@ export function Today({ home, me, goTo }: Props) {
       <header className="greeting">
         <h1>
           {greeting}
-          {me ? `, ${me.name}` : ""} {me?.emoji ?? "☀️"}
+          {me ? `, ${me.name}` : ""} {me ? <BuddySprite buddy={me.buddy} size={34} className="inline-sprite" /> : "☀️"}
         </h1>
         <p className="muted">{home.household.name}</p>
       </header>
@@ -107,13 +109,15 @@ export function Today({ home, me, goTo }: Props) {
               <li key={i.id}>
                 <span aria-hidden>{c.emoji}</span> {c.title}
                 <span className="pill">
-                  {doneCount(i.id)}/{i.timesPerWeek}
+                  {doneCount(i.id)}/{goesPerWeek(i)}
                 </span>
               </li>
             ) : null;
           })}
         </ul>
       </div>
+
+      {board.data && <EveryonesProgress board={board.data} home={home} me={me} />}
 
       <div className="card">
         <div className="card-head">

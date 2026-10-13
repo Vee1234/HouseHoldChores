@@ -3,6 +3,7 @@ import type { HomeData, Member, Reminder, Repeat } from "../shared/core";
 import { api } from "./api";
 import { Avatar, Sheet, attempt, toast, usePolled } from "./ui";
 import { formatWhen } from "./Today";
+import { Updates } from "./Updates";
 
 const REPEAT_LABELS: Record<Repeat, string> = {
   none: "Just once",
@@ -27,12 +28,18 @@ export function Reminders({ home, me }: { home: HomeData; me: Member | null }) {
 
   return (
     <section className="page">
-      <header className="page-head row spread">
-        <h1>⏰ Reminders</h1>
+      <header className="page-head">
+        <h1>🔔 Updates</h1>
+      </header>
+
+      <Updates home={home} me={me} />
+
+      <div className="row spread">
+        <h2>⏰ Reminders</h2>
         <button className="btn primary" onClick={() => setEditing("new")}>
           + New
         </button>
-      </header>
+      </div>
 
       {data && active.length === 0 && (
         <p className="empty">

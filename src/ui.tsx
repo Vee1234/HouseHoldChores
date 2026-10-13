@@ -1,12 +1,48 @@
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import type { Member } from "../shared/core";
+import { PIXEL_BUDDIES, buddyById, buddySvg } from "../shared/pixelBuddies";
 
 export const MEMBER_COLORS = ["blueberry", "pumpkin", "mint", "honey", "rose", "leaf", "lavender", "cherry"];
-export const AVATARS = ["🐻", "🐰", "🦊", "🐱", "🐶", "🐼", "🐸", "🐨", "🦔", "🐥", "🐹", "🦉", "🐢", "🐝", "🦄", "🐮"];
 export const CHORE_EMOJIS = ["🧹", "🧺", "🍽️", "🗑️", "🛏️", "🧽", "🚿", "🪴", "🐾", "🛒", "🍳", "👕", "🚗", "📦", "🪟", "🧸"];
 export const NOTE_COLORS = ["butter", "blush", "sage", "sky", "lilac"];
 
 export const memberColor = (key: string) => `var(--m-${MEMBER_COLORS.includes(key) ? key : "blueberry"})`;
+
+// Sprites are built once per buddy and face, then reused as image URLs.
+const spriteCache = new Map<string, string>();
+function spriteUrl(buddyId: string, happy: boolean): string {
+  const key = `${buddyId}:${happy}`;
+  let url = spriteCache.get(key);
+  if (!url) {
+    url = `data:image/svg+xml,${encodeURIComponent(buddySvg(buddyById(buddyId), happy))}`;
+    spriteCache.set(key, url);
+  }
+  return url;
+}
+
+/** A pixel-art buddy. `dancing` flips between its normal and happy ^ ^ faces. */
+export function BuddySprite({
+  buddy,
+  size,
+  happy = false,
+  dancing = false,
+  className = "",
+}: {
+  buddy: string;
+  size: number;
+  happy?: boolean;
+  dancing?: boolean;
+  className?: string;
+}) {
+  if (dancing)
+    return (
+      <span className={`sprite-flip ${className}`} style={{ width: size, height: size }} aria-hidden>
+        <img src={spriteUrl(buddy, false)} width={size} height={size} alt="" />
+        <img src={spriteUrl(buddy, true)} width={size} height={size} alt="" />
+      </span>
+    );
+  return <img className={`sprite ${className}`} src={spriteUrl(buddy, happy)} width={size} height={size} alt="" aria-hidden />;
+}
 
 export function Avatar({ member, size = 36 }: { member?: Member | null; size?: number }) {
   return (
@@ -15,8 +51,31 @@ export function Avatar({ member, size = 36 }: { member?: Member | null; size?: n
       style={{ width: size, height: size, fontSize: size * 0.58, background: member ? memberColor(member.color) : undefined }}
       aria-hidden
     >
-      {member?.emoji ?? "🫧"}
+      {member ? <BuddySprite buddy={member.buddy} size={Math.round(size * 0.78)} /> : "🫧"}
     </span>
+  );
+}
+
+/** The buddy picker: all the pixel animals, by name. */
+export function BuddyChoices({ value, onChange }: { value: string; onChange: (id: string) => void }) {
+  return (
+    <div className="buddy-choices" role="radiogroup" aria-label="Buddy">
+      {PIXEL_BUDDIES.map((b) => (
+        <button
+          type="button"
+          key={b.id}
+          role="radio"
+          aria-checked={value === b.id}
+          aria-label={b.name}
+          title={b.name}
+          className={value === b.id ? "on" : ""}
+          onClick={() => onChange(b.id)}
+        >
+          <BuddySprite buddy={b.id} size={44} happy={value === b.id} />
+          <span>{b.name.split(" ")[0]}</span>
+        </button>
+      ))}
+    </div>
   );
 }
 

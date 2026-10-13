@@ -1,18 +1,19 @@
 import { useCallback, useEffect, useState } from "react";
 import type { HomeData } from "../shared/core";
 import { ApiError, api, session } from "./api";
+import { BuddyTrack } from "./BuddyTrack";
 import { ChoresBoard } from "./ChoresBoard";
 import { Family, signOutDevice } from "./Family";
 import { Onboarding } from "./Onboarding";
 import { Reminders } from "./Reminders";
 import { TimeStats } from "./TimeStats";
 import { Today } from "./Today";
-import { Toasts, usePolled } from "./ui";
+import { BuddySprite, Toasts, usePolled } from "./ui";
 
 const TABS = [
   { id: "today", label: "Today", icon: "🏡" },
   { id: "chores", label: "Chores", icon: "🧺" },
-  { id: "reminders", label: "Reminders", icon: "⏰" },
+  { id: "reminders", label: "Updates", icon: "🔔" },
   { id: "time", label: "Time", icon: "⏳" },
   { id: "family", label: "Family", icon: "🐻" },
 ] as const;
@@ -75,6 +76,7 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
 
   return (
     <div className="shell">
+      {me && <BuddyTrack home={home} me={me} />}
       <main className="content">
         {tab === "today" && <Today home={home} me={me} goTo={go} />}
         {tab === "chores" && <ChoresBoard home={home} me={me} reloadHome={refresh} />}
@@ -88,7 +90,7 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
         {TABS.map((t) => (
           <button key={t.id} className={tab === t.id ? "on" : ""} onClick={() => go(t.id)} aria-current={tab === t.id ? "page" : undefined}>
             <span className="tab-icon" aria-hidden>
-              {t.id === "family" && me ? me.emoji : t.icon}
+              {t.id === "family" && me ? <BuddySprite buddy={me.buddy} size={26} /> : t.icon}
             </span>
             <span>{t.label}</span>
           </button>
