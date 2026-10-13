@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { HomeData, Member } from "../shared/core";
 import { api, session } from "./api";
+import { refreshApp } from "./appUpdate";
 import { type PushState, disablePush, enablePush, isStandalone, pushState, relinkPush } from "./push";
 import { Avatar, BuddyChoices, ColorChoices, Sheet, attempt, toast } from "./ui";
 
@@ -138,6 +139,14 @@ export function Family({ home, me, setMe, reloadHome, signOut, installPrompt }: 
           {home.household.joinCode}
         </button>
         <p className="muted small">Anyone with this code can see and edit your household, so only share it with family.</p>
+      </div>
+
+      <div className="card">
+        <h2>🔄 App version</h2>
+        <p className="muted">Not seeing the latest changes? This reloads the newest version of the app.</p>
+        <button className="btn" onClick={refreshApp}>
+          Refresh app
+        </button>
       </div>
 
       <div className="card">
