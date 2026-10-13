@@ -44,15 +44,17 @@ const parseCard = (id: string) => {
 const boxId = (day: string, who: string) => `${day}|${who}`;
 
 /**
- * The Chores tab's first screen: today, then the rest of this week, each day
- * split into a box per person. Drag a chore onto someone else's box to hand it
- * over; ticking works exactly as on the cards elsewhere.
+ * Chores by day, split into a box per person: `today` (the Today page) or the
+ * rest of this `week` (Chores → Coming up). Drag a chore onto someone else's box
+ * to hand it over; ticking works exactly as on the cards elsewhere.
  */
 export function TodayChores({
+  show,
   ticking,
   planning,
   onOpenItem,
 }: {
+  show: "today" | "week";
   ticking: Ticking;
   planning: Planning;
   onOpenItem: (itemId: string) => void;
@@ -222,14 +224,17 @@ export function TodayChores({
           <span>Only show my tasks</span>
         </label>
 
-        <section className="day-section is-today">
-          <h2>
-            Today <span className="day-date">· {longDate(today)}</span>
-          </h2>
-          {nothingToday && <p className="empty-day">No chores for this day</p>}
-          {dayBoxes(today, true)}
-        </section>
+        {show === "today" && (
+          <section className="day-section is-today">
+            <h2>
+              🧺 Today's chores <span className="day-date">· {longDate(today)}</span>
+            </h2>
+            {nothingToday && <p className="empty-day">No chores for this day</p>}
+            {dayBoxes(today, true)}
+          </section>
+        )}
 
+        {show === "week" && (
         <section className="day-section">
           <h2>This Week</h2>
           {laterDays.length === 0 ? (
@@ -245,6 +250,7 @@ export function TodayChores({
             ))
           )}
         </section>
+        )}
       </div>
       <DragOverlay dropAnimation={{ duration: 180, easing: "ease-out" }}>
         {draggedItem && (

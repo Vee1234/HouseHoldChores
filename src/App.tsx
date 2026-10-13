@@ -80,7 +80,7 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
     <div className="shell">
       {me && <BuddyTrack home={home} me={me} />}
       <main className="content">
-        {tab === "today" && <Today home={home} me={me} goTo={go} />}
+        {tab === "today" && <Today home={home} me={me} goTo={go} reloadHome={refresh} />}
         {tab === "chores" && <ChoresBoard home={home} me={me} reloadHome={refresh} />}
         {tab === "reminders" && <Reminders home={home} me={me} />}
         {tab === "time" && <TimeStats home={home} />}
