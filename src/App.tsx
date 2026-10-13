@@ -12,7 +12,7 @@ import { Today } from "./Today";
 import { BuddySprite, Toasts, usePolled } from "./ui";
 
 const TABS = [
-  { id: "today", label: "Today", icon: "🏡" },
+  { id: "today", label: "Home", icon: "🏡" },
   { id: "chores", label: "Chores", icon: "🧺" },
   { id: "reminders", label: "Reminders", icon: "⏰" },
   { id: "time", label: "Time", icon: "⏳" },
