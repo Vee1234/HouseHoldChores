@@ -829,6 +829,8 @@ textarea {
   touch-action: manipulation;
   user-select: none;
   -webkit-user-select: none;
+  /* Stops iOS showing its copy/lookup bubble during the press-and-hold. */
+  -webkit-touch-callout: none;
   cursor: grab;
   transition: background 0.2s;
 }

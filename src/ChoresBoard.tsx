@@ -5,7 +5,7 @@ import {
   DragOverlay,
   type DragStartEvent,
   KeyboardSensor,
-  PointerSensor,
+  MouseSensor,
   TouchSensor,
   closestCorners,
   useDroppable,
@@ -225,9 +225,10 @@ function BoardColumns(props: ColumnsProps) {
   }, [board.completions]);
 
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
-    // A short press-and-hold on touch screens, so swiping still scrolls the page.
-    useSensor(TouchSensor, { activationConstraint: { delay: 180, tolerance: 6 } }),
+    // Mouse only: a pointer sensor would also grab touches, fighting the page scroll on phones.
+    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
+    // Touch needs a press-and-hold; moving the finger sooner than that scrolls instead.
+    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 8 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
@@ -235,6 +236,8 @@ function BoardColumns(props: ColumnsProps) {
     id in lay ? id : Object.keys(lay).find((k) => lay[k].includes(id));
 
   const onDragStart = (e: DragStartEvent) => {
+    // A little buzz so you can feel the card has been picked up (Android only).
+    navigator.vibrate?.(12);
     setActiveId(String(e.active.id));
     setDragLayout(layout);
   };
