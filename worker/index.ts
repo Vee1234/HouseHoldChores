@@ -1427,6 +1427,14 @@ async function runSchedule(env: Env) {
 export default {
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
+    if (url.pathname.startsWith("/assets/")) {
+      // A build file that no longer exists (an old version asking for it) must be
+      // a real 404, not the app's page, or it gets used as a script or stylesheet.
+      const res = await env.ASSETS.fetch(req);
+      if ((res.headers.get("Content-Type") ?? "").includes("text/html"))
+        return new Response("Not found", { status: 404, headers: { "Cache-Control": "no-store" } });
+      return res;
+    }
     if (!url.pathname.startsWith("/api/")) return env.ASSETS.fetch(req);
     try {
       return await handleApi(req, env, ctx);
