@@ -193,7 +193,10 @@ export function useChorePlanner({ home, me, reloadHome, week }: Props & { week: 
 /** The Chores tab: what's coming up this week, the calendar and the templates. */
 export function ChoresBoard({ home, me, reloadHome }: Props) {
   const [view, setView] = useState<View>("upcoming");
-  const planner = useChorePlanner({ home, me, reloadHome, week: home.currentWeek });
+  // The next 7 days run into next week, which has its own board.
+  const nextPlanner = useChorePlanner({ home, me, reloadHome, week: addDays(home.currentWeek, 7) });
+  // Adding a chore or changing the template reaches next week too, so reload it as well.
+  const planner = useChorePlanner({ home, me, reloadHome: () => (reloadHome(), nextPlanner.refresh()), week: home.currentWeek });
   const { board, error, ticking, activeTemplate } = planner;
 
   return (
@@ -209,7 +212,7 @@ export function ChoresBoard({ home, me, reloadHome }: Props) {
           </button>
           <div className="segmented three" role="tablist" aria-label="Chores view">
             <button role="tab" aria-selected={view === "upcoming"} onClick={() => setView("upcoming")}>
-              📆 This Week
+              📆 Next 7 Days
             </button>
             <button role="tab" aria-selected={view === "calendar"} onClick={() => setView("calendar")}>
               🗓️ Calendar
@@ -239,7 +242,13 @@ export function ChoresBoard({ home, me, reloadHome }: Props) {
             {home.chores.length === 0 && activeTemplate && me && (
               <StarterChores templateId={activeTemplate.id} week={home.currentWeek} me={me} onAdded={planner.reloadAll} />
             )}
-            <TodayChores show="week" ticking={ticking} planning={planner.planning} onOpenItem={planner.openItem} />
+            <TodayChores
+              show="week"
+              ticking={ticking}
+              planning={planner.planning}
+              onOpenItem={planner.openItem}
+              next={nextPlanner.ticking && { ticking: nextPlanner.ticking, planning: nextPlanner.planning, onOpenItem: nextPlanner.openItem }}
+            />
           </>
         ) : (
           <p className="empty">{error ? `😿 ${error}` : "Fluffing the cushions…"}</p>
@@ -248,6 +257,7 @@ export function ChoresBoard({ home, me, reloadHome }: Props) {
       {view === "calendar" && <CalendarView home={home} me={me} />}
 
       {planner.sheets}
+      {nextPlanner.sheets}
     </section>
   );
 }
@@ -445,14 +455,13 @@ const REPEAT_CHOICES: { value: string; label: string }[] = [
   { value: "5", label: "Every 5 weeks" },
   { value: "6", label: "Every 6 weeks" },
   { value: "8", label: "Every 8 weeks" },
-  { value: "once", label: "Just once" },
 ];
 
 /**
- * Adding a chore, not tied to any particular week: how often, how often it
- * repeats, the day it starts and who does it. Repeating chores go into the
- * template in use (which the board follows); "just once" goes into the week
- * of its start date.
+ * Adding a chore, not tied to any particular week: how often, the day it
+ * starts and who does it. By default it's a one-off in the week of its start
+ * date; ticking "add to template" puts it in the template in use instead (which
+ * the board follows), repeating every so many weeks.
  */
 function AddItemSheet({
   today,
@@ -474,12 +483,13 @@ function AddItemSheet({
   const [step, setStep] = useState<"pick" | "new" | "details">(chores.length ? "pick" : "new");
   const [chore, setChore] = useState<Chore | null>(null);
   const [schedule, setSchedule] = useState<Schedule>(NEW_SCHEDULE);
+  const [toTemplate, setToTemplate] = useState(false);
   const [repeat, setRepeat] = useState("1");
   const [startDay, setStartDay] = useState(today);
   const [assigneeIds, setAssigneeIds] = useState<string[]>([memberId]);
   const [busy, setBusy] = useState(false);
   const existingRule = chore && template?.rules.find((r) => r.choreId === chore.id);
-  const once = repeat === "once";
+  const once = !toTemplate;
 
   const choose = (c: Chore) => {
     // Start from how the template in use does this chore, if it has it.
@@ -580,16 +590,22 @@ function AddItemSheet({
               afterOptions={chores.filter((c) => c.id !== chore.id)}
             />
           </div>
-          <label className="field">
-            <span>Repeats</span>
-            <select value={repeat} onChange={(e) => setRepeat(e.target.value)}>
-              {REPEAT_CHOICES.map((r) => (
-                <option key={r.value} value={r.value}>
-                  {r.label}
-                </option>
-              ))}
-            </select>
+          <label className="toggle">
+            <input type="checkbox" checked={toTemplate} onChange={(e) => setToTemplate(e.target.checked)} />
+            <span>Add to “{template?.name ?? "your template"}” so it keeps happening</span>
           </label>
+          {toTemplate && (
+            <label className="field">
+              <span>Repeats</span>
+              <select value={repeat} onChange={(e) => setRepeat(e.target.value)}>
+                {REPEAT_CHOICES.map((r) => (
+                  <option key={r.value} value={r.value}>
+                    {r.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <label className="field">
             <span>{once ? "On / from" : "Starts on"}</span>
             <input type="date" value={startDay} min={today} onChange={(e) => setStartDay(e.target.value || today)} />
