@@ -455,14 +455,13 @@ const REPEAT_CHOICES: { value: string; label: string }[] = [
   { value: "5", label: "Every 5 weeks" },
   { value: "6", label: "Every 6 weeks" },
   { value: "8", label: "Every 8 weeks" },
-  { value: "once", label: "Just once" },
 ];
 
 /**
- * Adding a chore, not tied to any particular week: how often, how often it
- * repeats, the day it starts and who does it. Repeating chores go into the
- * template in use (which the board follows); "just once" goes into the week
- * of its start date.
+ * Adding a chore, not tied to any particular week: how often, the day it
+ * starts and who does it. By default it's a one-off in the week of its start
+ * date; ticking "add to template" puts it in the template in use instead (which
+ * the board follows), repeating every so many weeks.
  */
 function AddItemSheet({
   today,
@@ -484,12 +483,13 @@ function AddItemSheet({
   const [step, setStep] = useState<"pick" | "new" | "details">(chores.length ? "pick" : "new");
   const [chore, setChore] = useState<Chore | null>(null);
   const [schedule, setSchedule] = useState<Schedule>(NEW_SCHEDULE);
+  const [toTemplate, setToTemplate] = useState(false);
   const [repeat, setRepeat] = useState("1");
   const [startDay, setStartDay] = useState(today);
   const [assigneeIds, setAssigneeIds] = useState<string[]>([memberId]);
   const [busy, setBusy] = useState(false);
   const existingRule = chore && template?.rules.find((r) => r.choreId === chore.id);
-  const once = repeat === "once";
+  const once = !toTemplate;
 
   const choose = (c: Chore) => {
     // Start from how the template in use does this chore, if it has it.
@@ -590,16 +590,22 @@ function AddItemSheet({
               afterOptions={chores.filter((c) => c.id !== chore.id)}
             />
           </div>
-          <label className="field">
-            <span>Repeats</span>
-            <select value={repeat} onChange={(e) => setRepeat(e.target.value)}>
-              {REPEAT_CHOICES.map((r) => (
-                <option key={r.value} value={r.value}>
-                  {r.label}
-                </option>
-              ))}
-            </select>
+          <label className="toggle">
+            <input type="checkbox" checked={toTemplate} onChange={(e) => setToTemplate(e.target.checked)} />
+            <span>Add to “{template?.name ?? "your template"}” so it keeps happening</span>
           </label>
+          {toTemplate && (
+            <label className="field">
+              <span>Repeats</span>
+              <select value={repeat} onChange={(e) => setRepeat(e.target.value)}>
+                {REPEAT_CHOICES.map((r) => (
+                  <option key={r.value} value={r.value}>
+                    {r.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <label className="field">
             <span>{once ? "On / from" : "Starts on"}</span>
             <input type="date" value={startDay} min={today} onChange={(e) => setStartDay(e.target.value || today)} />
