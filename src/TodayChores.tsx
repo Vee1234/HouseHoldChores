@@ -13,7 +13,7 @@ import {
   useSensors,
 } from "@dnd-kit/core";
 import { useState } from "react";
-import { type BoardItem, type Member, addDays, creditedMembers, formatMinutes } from "../shared/core";
+import { type BoardItem, type Member, addDays, creditedMembers, formatMinutes, weekOf } from "../shared/core";
 import { ChoreCard, type Planning, type Ticking, tickMinutes } from "./ChoresBoard";
 import { type Slot, slotsFor } from "./choreParts";
 import { Avatar, memberColor, toast } from "./ui";
@@ -35,6 +35,13 @@ interface Entry {
   slots: Slot[];
 }
 
+/** One week's board and the actions that work on it. */
+export interface WeekPlanner {
+  ticking: Ticking;
+  planning: Planning;
+  onOpenItem: (itemId: string) => void;
+}
+
 // Drag ids carry where the card came from: item, day and whose box.
 const cardId = (itemId: string, day: string, who: string, part: string) => [itemId, day, who, part].join("|");
 const parseCard = (id: string) => {
@@ -45,21 +52,28 @@ const boxId = (day: string, who: string) => `${day}|${who}`;
 
 /**
  * Chores by day, split into a box per person: `today` (the Today page) or the
- * rest of this `week` (Chores → This Week). Drag a chore onto someone else's box
- * to hand it over; ticking works exactly as on the cards elsewhere.
+ * next 7 days from today (Chores → Next 7 Days), which runs into `next` week's
+ * board. Drag a chore onto someone else's box to hand it over; ticking works
+ * exactly as on the cards elsewhere.
  */
 export function TodayChores({
   show,
   ticking,
   planning,
   onOpenItem,
+  next,
 }: {
   show: "today" | "week";
   ticking: Ticking;
   planning: Planning;
   onOpenItem: (itemId: string) => void;
+  next?: WeekPlanner | null;
 }) {
   const { board, chores, members, me, today } = ticking;
+  const weeks: WeekPlanner[] = [{ ticking, planning, onOpenItem }, ...(next ? [next] : [])];
+  /** The board a day belongs to, if it's loaded. */
+  const weekFor = (day: string) => weeks.find((w) => w.ticking.board.week === weekOf(day));
+  const weekOfItem = new Map(weeks.flatMap((w) => w.ticking.board.items.map((i) => [i.id, w] as const)));
   const [onlyMine, setOnlyMineState] = useState(() => {
     try {
       return localStorage.getItem(ONLY_MINE_KEY) !== "no";
@@ -73,21 +87,23 @@ export function TodayChores({
       localStorage.setItem(ONLY_MINE_KEY, v ? "yes" : "no");
     } catch {}
   };
-  // The Today page always shows everyone; the filter is only offered for This Week.
+  // The Today page always shows everyone; the filter is only offered for Next 7 Days.
   const filtering = show === "week" && onlyMine && !!me;
   const people = filtering ? [me!] : members;
   const [dragging, setDragging] = useState<string | null>(null);
 
-  const itemsById = new Map(board.items.map((i) => [i.id, i]));
+  const itemsById = new Map(weeks.flatMap((w) => w.ticking.board.items.map((i) => [i.id, i] as const)));
   const slotsOf = new Map(
-    board.items.map((item) => [item.id, slotsFor(item, board.week, board.completions.filter((c) => c.itemId === item.id)).slots]),
+    weeks.flatMap(({ ticking: { board: b } }) =>
+      b.items.map((item) => [item.id, slotsFor(item, b.week, b.completions.filter((c) => c.itemId === item.id)).slots] as const),
+    ),
   );
   const isFor = (item: BoardItem, who: string) => (who === NOBODY ? item.assigneeIds.length === 0 : item.assigneeIds.includes(who));
   const byTime = (a: Entry, b: Entry) => (a.item.time ?? "99").localeCompare(b.item.time ?? "99");
 
   /** Someone's chores on a set day, each with just that day's go. */
   const onDay = (who: string, day: string): Entry[] =>
-    board.items
+    (weekFor(day)?.ticking.board.items ?? [])
       .filter((i) => i.kind === "days" && isFor(i, who))
       .flatMap((item) => {
         const slot = slotsOf.get(item.id)!.find((s) => s.day === day);
@@ -106,7 +122,7 @@ export function TodayChores({
   const minutesFor = (who: string, day: string) => {
     let planned = onDay(who, day).reduce((n, e) => n + tickMinutes(e.item, chores), 0);
     let done = 0;
-    for (const c of board.completions) {
+    for (const c of weekFor(day)?.ticking.board.completions ?? []) {
       const item = itemsById.get(c.itemId);
       if (!item || c.day !== day || !creditedMembers(c.memberId, item.assigneeIds).includes(who)) continue;
       done += tickMinutes(item, chores);
@@ -136,7 +152,7 @@ export function TodayChores({
     const target = members.find((m) => m.id === to);
     if (!item || !target || to === from) return;
     if (item.assigneeIds.includes(to)) return toast(`${target.name} is already on that one`);
-    planning.handOver(item, from === NOBODY ? null : from, to);
+    weekOfItem.get(itemId)!.planning.handOver(item, from === NOBODY ? null : from, to);
     toast(`Handed to ${target.name} 🤝`);
   };
 
@@ -145,8 +161,8 @@ export function TodayChores({
       key={cardId(e.item.id, day, who, part)}
       id={cardId(e.item.id, day, who, part)}
       entry={e}
-      ticking={ticking}
-      onOpen={() => onOpenItem(e.item.id)}
+      ticking={weekOfItem.get(e.item.id)!.ticking}
+      onOpen={() => weekOfItem.get(e.item.id)!.onOpenItem(e.item.id)}
     />
   );
 
@@ -195,12 +211,12 @@ export function TodayChores({
     );
   };
 
-  const laterDays: string[] = [];
-  for (let day = addDays(today, 1); day <= addDays(board.week, 6); day = addDays(day, 1)) laterDays.push(day);
-  // Days where nobody being shown has anything on are left out.
-  const laterWithChores = laterDays.filter(
-    (day) => people.some((m) => onDay(m.id, day).length > 0) || (!filtering && onDay(NOBODY, day).length > 0),
-  );
+  // Today always shows (it has the "any day" chores); later days only if someone being shown has something on.
+  const laterWithChores: string[] = [];
+  for (let i = 1; i < 7; i++) {
+    const day = addDays(today, i);
+    if (people.some((m) => onDay(m.id, day).length > 0) || (!filtering && onDay(NOBODY, day).length > 0)) laterWithChores.push(day);
+  }
 
   const draggedItem = dragging ? itemsById.get(parseCard(dragging).itemId) : undefined;
   const draggedSlots =
@@ -237,11 +253,13 @@ export function TodayChores({
 
         {show === "week" && (
         <section className="day-section">
-          <h2>This Week</h2>
-          {laterDays.length === 0 ? (
-            <p className="empty-day">That's the end of the week — a fresh one starts tomorrow 🌱</p>
-          ) : laterWithChores.length === 0 ? (
-            <p className="empty-day">Nothing else planned this week 🌼</p>
+          <h2>Next 7 days</h2>
+          <div className="later-day">
+            <h3>Today · {longDate(today)}</h3>
+            {dayBoxes(today, true)}
+          </div>
+          {laterWithChores.length === 0 ? (
+            <p className="empty-day">Nothing else planned for the next 7 days 🌼</p>
           ) : (
             laterWithChores.map((day) => (
               <div key={day} className="later-day">

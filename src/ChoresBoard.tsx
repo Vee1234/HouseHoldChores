@@ -193,7 +193,10 @@ export function useChorePlanner({ home, me, reloadHome, week }: Props & { week: 
 /** The Chores tab: what's coming up this week, the calendar and the templates. */
 export function ChoresBoard({ home, me, reloadHome }: Props) {
   const [view, setView] = useState<View>("upcoming");
-  const planner = useChorePlanner({ home, me, reloadHome, week: home.currentWeek });
+  // The next 7 days run into next week, which has its own board.
+  const nextPlanner = useChorePlanner({ home, me, reloadHome, week: addDays(home.currentWeek, 7) });
+  // Adding a chore or changing the template reaches next week too, so reload it as well.
+  const planner = useChorePlanner({ home, me, reloadHome: () => (reloadHome(), nextPlanner.refresh()), week: home.currentWeek });
   const { board, error, ticking, activeTemplate } = planner;
 
   return (
@@ -209,7 +212,7 @@ export function ChoresBoard({ home, me, reloadHome }: Props) {
           </button>
           <div className="segmented three" role="tablist" aria-label="Chores view">
             <button role="tab" aria-selected={view === "upcoming"} onClick={() => setView("upcoming")}>
-              📆 This Week
+              📆 Next 7 Days
             </button>
             <button role="tab" aria-selected={view === "calendar"} onClick={() => setView("calendar")}>
               🗓️ Calendar
@@ -239,7 +242,13 @@ export function ChoresBoard({ home, me, reloadHome }: Props) {
             {home.chores.length === 0 && activeTemplate && me && (
               <StarterChores templateId={activeTemplate.id} week={home.currentWeek} me={me} onAdded={planner.reloadAll} />
             )}
-            <TodayChores show="week" ticking={ticking} planning={planner.planning} onOpenItem={planner.openItem} />
+            <TodayChores
+              show="week"
+              ticking={ticking}
+              planning={planner.planning}
+              onOpenItem={planner.openItem}
+              next={nextPlanner.ticking && { ticking: nextPlanner.ticking, planning: nextPlanner.planning, onOpenItem: nextPlanner.openItem }}
+            />
           </>
         ) : (
           <p className="empty">{error ? `😿 ${error}` : "Fluffing the cushions…"}</p>
@@ -248,6 +257,7 @@ export function ChoresBoard({ home, me, reloadHome }: Props) {
       {view === "calendar" && <CalendarView home={home} me={me} />}
 
       {planner.sheets}
+      {nextPlanner.sheets}
     </section>
   );
 }
